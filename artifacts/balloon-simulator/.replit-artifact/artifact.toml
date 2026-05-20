@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "우주풍선 낙하 예측 시뮬레이터"
+version = "1.0.0"
+id = "artifacts/balloon-simulator"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21097
+
+[services.development]
+run = "pnpm --filter @workspace/balloon-simulator run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/balloon-simulator", "run", "build" ]
+publicDir = "artifacts/balloon-simulator/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21097"
+BASE_PATH = "/"
