@@ -124,6 +124,62 @@ function getInterpolatedWind(
   ];
 }
 
+// ─── Atmosphere density & realistic vertical velocity ────────────────────────
+
+/** ISA air density at altitude h (kg/m³) */
+function airDensity(h: number): number {
+  const p = altitudeToPressure(Math.max(h, 0));
+  const T = isaTemperature(Math.max(h, 0));
+  return p / (R * T);
+}
+
+/** Sea-level air density (kg/m³) */
+const RHO_0 = P0 / (R * T0); // ≈ 1.225 kg/m³
+
+/**
+ * Effective ascent rate at altitude h.
+ *
+ * Physical derivation:
+ *   – Net lift (buoyancy − weight) is approximately constant throughout flight
+ *     because ρ_air × V ≈ const (gas mass conserved, volume ∝ 1/ρ_air).
+ *   – Drag ∝ ρ_air(h) × A(h) × v², and A(h) ∝ V(h)^(2/3) ∝ ρ_air(h)^(−2/3).
+ *   – At terminal velocity: F_net = F_drag → v ∝ ρ_air(h)^(−1/6).
+ *
+ * Result: ascent rate roughly doubles from sea level to ~30 km.
+ */
+function effectiveAscentRate(h: number, v0: number): number {
+  return v0 * Math.pow(RHO_0 / airDensity(h), 1 / 6);
+}
+
+/**
+ * Effective descent rate (magnitude) at altitude h.
+ *
+ * Physical derivation:
+ *   Parachute terminal velocity: F_drag = m·g
+ *   0.5 × C_D × ρ_air(h) × A × v² = m·g
+ *   → v(h) = v_ground × √(ρ₀ / ρ_air(h))
+ *
+ * Capped at 90 m/s (hypersonic would require different model).
+ * At 30 km: typical descent ≈ 6 × √(68) ≈ 50 m/s.
+ */
+function effectiveDescentRate(h: number, v0: number): number {
+  return Math.min(v0 * Math.sqrt(RHO_0 / airDensity(h)), 90);
+}
+
+/**
+ * Turbulence sigma (m/s) by atmospheric layer:
+ *   0–3 km    : moderate convective turbulence
+ *   3–12 km   : stronger, tropopause / jet-stream region
+ *   12–20 km  : stratosphere lower, mostly smooth
+ *   >20 km    : very calm
+ */
+function turbulenceSigma(h: number): number {
+  if (h < 3000)  return 0.42;
+  if (h < 12000) return 0.80;
+  if (h < 20000) return 0.20;
+  return 0.08;
+}
+
 // ─── Geodesy helpers ──────────────────────────────────────────────────────────
 
 const EARTH_R = 6371000; // m
@@ -262,26 +318,52 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
   const launchMs = new Date(launch_datetime).getTime();
   const MAX_STEPS = 100000;
 
-  for (let step = 0; step < MAX_STEPS; step++) {
-    const tMs          = launchMs + elapsedSec * 1000;
-    const pressurePa   = altitudeToPressure(Math.max(alt, 0));
-    const pressureHpa  = pressurePa / 100;
-    const [vx, vy]     = getInterpolatedWind(windCache, pressureHpa, tMs);
+  // Ornstein-Uhlenbeck turbulent vertical velocity (m/s)
+  // Mean-reversion coefficient θ chosen so correlation time ≈ 5 × time_step
+  let turbVz = 0;
+  const turbTheta = 1 - Math.exp(-1 / 5); // ≈ 0.18 for 5-step correlation
 
-    const windSpeedMs  = Math.sqrt(vx * vx + vy * vy);
-    const windDirDeg   = ((Math.atan2(-vx, -vy) * 180) / Math.PI + 360) % 360;
-    const vertSpeedMs  = phase === "ascent" ? ascent_rate : -descent_rate;
-    const horizSpeedMs = windSpeedMs; // balloon drifts at wind speed horizontally
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const tMs         = launchMs + elapsedSec * 1000;
+    const pressurePa  = altitudeToPressure(Math.max(alt, 0));
+    const pressureHpa = pressurePa / 100;
+    const [vx, vy]    = getInterpolatedWind(windCache, pressureHpa, tMs);
+
+    const windSpeedMs = Math.sqrt(vx * vx + vy * vy);
+    const windDirDeg  = ((Math.atan2(-vx, -vy) * 180) / Math.PI + 360) % 360;
+
+    // ── Turbulence: Ornstein-Uhlenbeck step ──────────────────────────────────
+    // dV = −θ·V·dt + σ·√(2θ)·dW   (discrete: V ← V·(1−θ) + noise)
+    const sigma = turbulenceSigma(alt);
+    turbVz = turbVz * (1 - turbTheta) + (Math.random() - 0.5) * sigma * Math.sqrt(2 * turbTheta) * 3.5;
+    turbVz = Math.max(-3, Math.min(3, turbVz)); // hard clamp
+
+    // ── Vertical speed: physics-based, not constant ───────────────────────────
+    let vertSpeedMs: number;
+    if (phase === "ascent") {
+      // Effective rate rises with altitude (lower air density → less drag)
+      const physRate = effectiveAscentRate(alt, ascent_rate);
+      // Near burst: extra overinflation drag slows the balloon
+      const nearBurstFactor = alt > burst_altitude - 3000
+        ? 1 - 0.35 * ((alt - (burst_altitude - 3000)) / 3000)
+        : 1;
+      vertSpeedMs = Math.max(0.3, physRate * nearBurstFactor + turbVz);
+    } else {
+      // Parachute: fast at altitude, slows dramatically near ground
+      const physRate = effectiveDescentRate(alt, descent_rate);
+      vertSpeedMs = -(Math.max(0.5, physRate + turbVz));
+    }
+
+    const horizSpeedMs = windSpeedMs;
     const totalSpeedMs = Math.sqrt(horizSpeedMs ** 2 + vertSpeedMs ** 2);
 
-    // Bearing: direction balloon is moving horizontally
-    const moveBearing  = phase === "ascent" || step === 0
+    const moveBearing = step === 0
       ? (((Math.atan2(vx, vy) * 180) / Math.PI) + 360) % 360
       : bearingDeg(prevLat, prevLon, lat, lon);
 
-    if (windSpeedMs   > maxWindSpeed)  maxWindSpeed  = windSpeedMs;
-    if (horizSpeedMs  > maxHorizSpeed) maxHorizSpeed = horizSpeedMs;
-    if (totalSpeedMs  > maxTotalSpeed) maxTotalSpeed = totalSpeedMs;
+    if (windSpeedMs  > maxWindSpeed)  maxWindSpeed  = windSpeedMs;
+    if (horizSpeedMs > maxHorizSpeed) maxHorizSpeed = horizSpeedMs;
+    if (totalSpeedMs > maxTotalSpeed) maxTotalSpeed = totalSpeedMs;
 
     trajectory.push({
       time:             new Date(tMs).toISOString(),
@@ -302,42 +384,41 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
     prevLat = lat;
     prevLon = lon;
 
-    // Update position
     [lat, lon] = updatePosition(lat, lon, vx, vy, time_step);
 
-    // Update altitude
+    // ── Altitude update ───────────────────────────────────────────────────────
+    alt += vertSpeedMs * time_step;
+
     if (phase === "ascent") {
-      alt += ascent_rate * time_step;
       if (alt >= burst_altitude) {
         alt = burst_altitude;
         ascentDuration = elapsedSec;
         phase = "descent";
       }
-    } else {
-      alt -= descent_rate * time_step;
-      if (alt <= 0) {
-        // Final landing point
-        const landTMs = tMs + time_step * 1000;
-        const [lx, ly] = getInterpolatedWind(windCache, P0 / 100, landTMs);
-        const landWindSpeed = Math.sqrt(lx * lx + ly * ly);
-        trajectory.push({
-          time:             new Date(landTMs).toISOString(),
-          latitude:         Math.round(lat * 100000) / 100000,
-          longitude:        Math.round(lon * 100000) / 100000,
-          altitude:         0,
-          phase:            "descent",
-          wind_speed:       Math.round(landWindSpeed * 10) / 10,
-          wind_direction:   Math.round((((Math.atan2(-lx, -ly) * 180) / Math.PI) + 360) % 360),
-          pressure_hpa:     Math.round(P0 / 100),
-          horizontal_speed: Math.round(landWindSpeed * 10) / 10,
-          vertical_speed:   -descent_rate,
-          total_speed:      Math.round(Math.sqrt(landWindSpeed ** 2 + descent_rate ** 2) * 10) / 10,
-          bearing:          bearingDeg(prevLat, prevLon, lat, lon),
-        });
-        elapsedSec += time_step;
-        break;
-      }
+    } else if (alt <= 0) {
+      // Final landing point snapshot
+      const landTMs = tMs + time_step * 1000;
+      const [lx, ly] = getInterpolatedWind(windCache, P0 / 100, landTMs);
+      const landWindSpeed = Math.sqrt(lx * lx + ly * ly);
+      const landVDesc     = effectiveDescentRate(0, descent_rate);
+      trajectory.push({
+        time:             new Date(landTMs).toISOString(),
+        latitude:         Math.round(lat * 100000) / 100000,
+        longitude:        Math.round(lon * 100000) / 100000,
+        altitude:         0,
+        phase:            "descent",
+        wind_speed:       Math.round(landWindSpeed * 10) / 10,
+        wind_direction:   Math.round((((Math.atan2(-lx, -ly) * 180) / Math.PI) + 360) % 360),
+        pressure_hpa:     Math.round(P0 / 100),
+        horizontal_speed: Math.round(landWindSpeed * 10) / 10,
+        vertical_speed:   -Math.round(landVDesc * 10) / 10,
+        total_speed:      Math.round(Math.sqrt(landWindSpeed ** 2 + landVDesc ** 2) * 10) / 10,
+        bearing:          bearingDeg(prevLat, prevLon, lat, lon),
+      });
+      elapsedSec += time_step;
+      break;
     }
+
     elapsedSec += time_step;
   }
 
