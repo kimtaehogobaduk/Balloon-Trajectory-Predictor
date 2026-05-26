@@ -25,19 +25,25 @@ export interface SimulationInput {
   /** ISO 8601 launch datetime (UTC) */
   launch_datetime: string;
   /**
-     * Balloon ascent rate in m/s
+     * Empty latex balloon mass in grams (determines burst diameter)
+     * @minimum 50
+     * @maximum 3000
+     */
+  balloon_mass_g: number;
+  /**
+     * Total payload mass in grams (instruments, camera, hardware)
+     * @minimum 0
+     * @maximum 10000
+     */
+  payload_mass_g: number;
+  /**
+     * Target balloon ascent rate in m/s at sea level
      * @minimum 0.5
      * @maximum 20
      */
   ascent_rate: number;
   /**
-     * Altitude at which the balloon bursts in meters
-     * @minimum 10000
-     * @maximum 45000
-     */
-  burst_altitude: number;
-  /**
-     * Parachute descent rate in m/s (positive = downward)
+     * Parachute descent rate in m/s at sea level (positive = downward)
      * @minimum 1
      * @maximum 30
      */
@@ -48,6 +54,19 @@ export interface SimulationInput {
      * @maximum 300
      */
   time_step?: number;
+}
+
+export interface BalloonConfig {
+  /** Balloon diameter at sea level fill (m) */
+  fill_diameter_m: number;
+  /** Balloon diameter at burst (m) */
+  burst_diameter_m: number;
+  /** Calculated theoretical burst altitude (m) */
+  burst_altitude_m: number;
+  /** Net upward force at sea level in Newtons */
+  neck_lift_n: number;
+  /** Fill volume at sea level in cubic metres */
+  volume_fill_m3: number;
 }
 
 export interface TrajectoryPoint {
@@ -97,6 +116,7 @@ export interface SimulationResult {
   trajectory: TrajectoryPoint[];
   landing: TrajectoryPoint;
   stats: FlightStats;
+  balloon_config: BalloonConfig;
   /** ISO 8601 datetime when wind data was fetched */
   wind_data_fetched_at: string;
 }

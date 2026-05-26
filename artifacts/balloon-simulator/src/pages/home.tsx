@@ -23,12 +23,26 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
+const BALLOON_SIZES = [
+  { value: "100",  label: "100g  (소형, ~4.5m burst)" },
+  { value: "200",  label: "200g  (소형, ~5.5m burst)" },
+  { value: "300",  label: "300g  (소형, ~6.2m burst)" },
+  { value: "600",  label: "600g  (중형, ~7.5m burst)" },
+  { value: "800",  label: "800g  (중형, ~8.3m burst)" },
+  { value: "1000", label: "1000g (표준, ~9.0m burst)" },
+  { value: "1200", label: "1200g (대형, ~9.7m burst)" },
+  { value: "1500", label: "1500g (대형, ~10.2m burst)" },
+  { value: "2000", label: "2000g (초대형, ~11.3m burst)" },
+  { value: "3000", label: "3000g (특대, ~13.0m burst)" },
+];
+
 const formSchema = z.object({
   latitude: z.coerce.number().min(-90).max(90),
   longitude: z.coerce.number().min(-180).max(180),
   launch_datetime: z.string().min(1, "Launch datetime is required"),
+  balloon_mass_g: z.coerce.number().min(50).max(3000),
+  payload_mass_g: z.coerce.number().min(0).max(10000),
   ascent_rate: z.coerce.number().min(0.5).max(20),
-  burst_altitude: z.coerce.number().min(10000).max(45000),
   descent_rate: z.coerce.number().min(1).max(30),
   time_step: z.coerce.number().min(1).max(300).default(60),
 });
@@ -54,8 +68,9 @@ export default function Home() {
       latitude: 37.5665,
       longitude: 126.9780,
       launch_datetime: format(addHours(new Date(), 1), "yyyy-MM-dd'T'HH:mm"),
+      balloon_mass_g: 1000,
+      payload_mass_g: 500,
       ascent_rate: 5.0,
-      burst_altitude: 30000,
       descent_rate: 6.0,
       time_step: 60,
     },
@@ -237,15 +252,42 @@ export default function Home() {
                     />
                   </div>
 
+                  <FormField
+                    control={form.control}
+                    name="balloon_mass_g"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-xs font-mono text-muted-foreground">BALLOON SIZE</FormLabel>
+                        <Select
+                          value={String(field.value)}
+                          onValueChange={(v) => field.onChange(Number(v))}
+                        >
+                          <FormControl>
+                            <SelectTrigger className="font-mono text-xs h-9 bg-muted/30 border-border">
+                              <SelectValue placeholder="Select balloon..." />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {BALLOON_SIZES.map(s => (
+                              <SelectItem key={s.value} value={s.value} className="font-mono text-xs">
+                                {s.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </FormItem>
+                    )}
+                  />
+
                   <div className="grid grid-cols-2 gap-4">
                     <FormField
                       control={form.control}
-                      name="burst_altitude"
+                      name="payload_mass_g"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel className="text-xs font-mono text-muted-foreground">BURST ALT (m)</FormLabel>
+                          <FormLabel className="text-xs font-mono text-muted-foreground">PAYLOAD (g)</FormLabel>
                           <FormControl>
-                            <Input type="number" step="100" className="font-mono text-sm h-9 bg-muted/30" {...field} />
+                            <Input type="number" step="10" className="font-mono text-sm h-9 bg-muted/30" {...field} />
                           </FormControl>
                         </FormItem>
                       )}
@@ -361,6 +403,39 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
+
+                {/* Balloon Config Panel */}
+                {result.balloon_config && (
+                  <div className="p-4 rounded-lg border border-primary/20 bg-primary/5 space-y-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-primary/70">
+                      Balloon Configuration (Calculated)
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono">
+                      <div className="flex justify-between col-span-2 border-b border-primary/10 pb-2">
+                        <span className="text-muted-foreground">Burst Altitude</span>
+                        <span className="font-bold text-primary text-sm">
+                          {(result.balloon_config.burst_altitude_m / 1000).toFixed(1)} km
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Fill Ø</span>
+                        <span>{result.balloon_config.fill_diameter_m.toFixed(2)} m</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Burst Ø</span>
+                        <span>{result.balloon_config.burst_diameter_m.toFixed(1)} m</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Fill Vol.</span>
+                        <span>{result.balloon_config.volume_fill_m3.toFixed(2)} m³</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Neck Lift</span>
+                        <span>{result.balloon_config.neck_lift_n.toFixed(1)} N</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3">
                   <StatCard 

@@ -124,6 +124,105 @@ function getInterpolatedWind(
   ];
 }
 
+// ─── Balloon burst physics ────────────────────────────────────────────────────
+
+const RHO_HE_SL = 101325 / (2077 * 288.15); // ≈ 0.1693 kg/m³  (R_He = 2077 J/kg·K)
+const C_D_BALLOON = 0.47; // drag coefficient of a sphere
+const C_D_PARA    = 1.5;  // parachute drag coefficient
+
+/**
+ * Empirical burst diameter for a latex balloon of given mass.
+ * Fit to Kaymont/Totex manufacturer data.
+ *   100g  → ~4.5 m   200g → ~5.5 m   600g → ~7.5 m
+ *   1000g → ~9.0 m   1500g → ~10.2 m   2000g → ~11.3 m
+ */
+function burstDiameter(balloonMassKg: number): number {
+  return 4.5 * Math.pow(balloonMassKg / 0.1, 0.30);
+}
+
+export interface BalloonConfig {
+  fill_diameter_m:  number;
+  burst_diameter_m: number;
+  burst_altitude_m: number;
+  neck_lift_n:      number;
+  volume_fill_m3:   number;
+}
+
+/**
+ * Given balloon mass, payload mass, and target sea-level ascent rate,
+ * returns the theoretical balloon configuration (fill size + burst altitude).
+ *
+ * Force balance at sea-level terminal ascent velocity v₀:
+ *   (ρ_air − ρ_He) × V × g  =  m_total × g  +  ½ C_D ρ_air π r² v₀²
+ * → cubic in fill radius r, solved by Newton-Raphson.
+ *
+ * Burst altitude: binary search for h where
+ *   (P₀/P(h)) × (T(h)/T₀)  =  V_burst / V_fill
+ */
+export function calculateBalloonConfig(
+  balloonMassG: number,
+  payloadMassG: number,
+  ascentRateMs: number
+): BalloonConfig {
+  const m_balloon  = balloonMassG  / 1000; // kg
+  const m_payload  = payloadMassG  / 1000; // kg
+  const m_total    = m_balloon + m_payload;
+  const v0         = ascentRateMs;
+
+  // Sea-level air density from ISA constants
+  const rho0       = P0 / (R * T0); // ≈ 1.225 kg/m³
+  const lift_coeff = rho0 - RHO_HE_SL; // ≈ 1.056 kg/m³ net specific lift
+
+  // Burst geometry
+  const d_burst  = burstDiameter(m_balloon);
+  const r_burst  = d_burst / 2;
+  const V_burst  = (4 / 3) * Math.PI * r_burst ** 3;
+
+  // Drag coefficient (for ascent force balance)
+  const drag_k   = 0.5 * C_D_BALLOON * rho0 * Math.PI; // × r² × v₀²
+
+  // Newton-Raphson on f(r) = (4/3)π·lift_coeff·r³ - drag_k·r²·v₀² - m_total·g = 0
+  const A        = (4 / 3) * Math.PI * lift_coeff * G;
+  const B        = drag_k * v0 * v0;
+  const C        = m_total * G;
+
+  // Initial guess: radius from pure buoyancy (no drag)
+  let r = Math.cbrt((3 * C) / (4 * Math.PI * lift_coeff * G));
+  for (let i = 0; i < 50; i++) {
+    const f  = A * r ** 3 - B * r ** 2 - C;
+    const df = 3 * A * r ** 2 - 2 * B * r;
+    if (Math.abs(df) < 1e-12) break;
+    const dr = f / df;
+    r -= dr;
+    if (Math.abs(dr) < 1e-9) break;
+  }
+  r = Math.max(r, 0.3); // floor at 30 cm
+
+  const V_fill  = (4 / 3) * Math.PI * r ** 3;
+  const neck_lift = (lift_coeff * V_fill - m_total) * G; // N (net upward)
+
+  // Burst altitude: find h where expansion ratio = V_burst/V_fill
+  const expTarget = V_burst / V_fill;
+  let hLo = 0, hHi = 60000;
+  for (let i = 0; i < 60; i++) {
+    const hMid = (hLo + hHi) / 2;
+    const P    = altitudeToPressure(hMid);
+    const T    = isaTemperature(hMid);
+    const expH = (P0 / P) * (T / T0);
+    if (expH < expTarget) hLo = hMid;
+    else                  hHi = hMid;
+  }
+  const burst_alt = (hLo + hHi) / 2;
+
+  return {
+    fill_diameter_m:  Math.round(r * 2 * 1000) / 1000,
+    burst_diameter_m: Math.round(d_burst * 1000) / 1000,
+    burst_altitude_m: Math.round(burst_alt),
+    neck_lift_n:      Math.round(neck_lift * 100) / 100,
+    volume_fill_m3:   Math.round(V_fill * 1000) / 1000,
+  };
+}
+
 // ─── Atmosphere density & realistic vertical velocity ────────────────────────
 
 /** ISA air density at altitude h (kg/m³) */
@@ -286,6 +385,7 @@ export interface SimulationResult {
   trajectory: TrajectoryPoint[];
   landing: TrajectoryPoint;
   stats: FlightStats;
+  balloon_config: BalloonConfig;
   wind_data_fetched_at: string;
 }
 
@@ -293,8 +393,9 @@ export interface SimulationInput {
   latitude: number;
   longitude: number;
   launch_datetime: string;
+  balloon_mass_g: number;
+  payload_mass_g: number;
   ascent_rate: number;
-  burst_altitude: number;
   descent_rate: number;
   time_step?: number;
 }
@@ -302,7 +403,11 @@ export interface SimulationInput {
 // ─── Main simulation ──────────────────────────────────────────────────────────
 
 export async function runBalloonSimulation(input: SimulationInput): Promise<SimulationResult> {
-  const { latitude, longitude, launch_datetime, ascent_rate, burst_altitude, descent_rate, time_step = 60 } = input;
+  const { latitude, longitude, launch_datetime, balloon_mass_g, payload_mass_g, ascent_rate, descent_rate, time_step = 60 } = input;
+
+  // ── Derive burst altitude from balloon physics ──────────────────────────────
+  const balloonConfig  = calculateBalloonConfig(balloon_mass_g, payload_mass_g, ascent_rate);
+  const burst_altitude = balloonConfig.burst_altitude_m;
 
   const windFetchedAt = new Date().toISOString();
   const windCache     = await fetchWindCache(latitude, longitude);
@@ -435,5 +540,5 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
     horizontal_drift_km:    Math.round(haversineKm(latitude, longitude, landing.latitude, landing.longitude) * 10) / 10,
   };
 
-  return { trajectory, landing, stats, wind_data_fetched_at: windFetchedAt };
+  return { trajectory, landing, stats, balloon_config: balloonConfig, wind_data_fetched_at: windFetchedAt };
 }

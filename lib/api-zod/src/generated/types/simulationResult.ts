@@ -5,6 +5,7 @@
  * 우주풍선 낙하 예측 시뮬레이터 API
  * OpenAPI spec version: 0.1.0
  */
+import type { BalloonConfig } from './balloonConfig';
 import type { FlightStats } from './flightStats';
 import type { TrajectoryPoint } from './trajectoryPoint';
 
@@ -12,6 +13,7 @@ export interface SimulationResult {
   trajectory: TrajectoryPoint[];
   landing: TrajectoryPoint;
   stats: FlightStats;
+  balloon_config: BalloonConfig;
   /** ISO 8601 datetime when wind data was fetched */
   wind_data_fetched_at: string;
 }

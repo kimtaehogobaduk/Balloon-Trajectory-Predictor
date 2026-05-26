@@ -11,27 +11,29 @@ const PRESETS = [
   {
     id: "korea-standard",
     name: "한국 표준 기상 탐사",
-    description: "서울 기준 일반적인 고층 기상 관측 풍선 설정",
+    description: "서울 기준 1000g 풍선, 500g 탑재물 — 계산 버스트 고도 약 33km",
     config: {
       latitude: 37.5665,
       longitude: 126.978,
       launch_datetime: new Date(Date.now() + 3600 * 1000).toISOString().slice(0, 16) + ":00Z",
+      balloon_mass_g: 1000,
+      payload_mass_g: 500,
       ascent_rate: 5.0,
-      burst_altitude: 30000,
       descent_rate: 6.0,
       time_step: 60,
     },
   },
   {
     id: "high-altitude",
-    name: "초고층 탐사 (30km+)",
-    description: "성층권 진입을 목표로 한 고고도 기상 탐사 설정",
+    name: "초고층 탐사 (35km+)",
+    description: "부산 기준 2000g 대형 풍선, 경량 탑재물 — 계산 버스트 고도 약 38km",
     config: {
       latitude: 35.1796,
       longitude: 129.0756,
       launch_datetime: new Date(Date.now() + 3600 * 1000).toISOString().slice(0, 16) + ":00Z",
+      balloon_mass_g: 2000,
+      payload_mass_g: 300,
       ascent_rate: 4.0,
-      burst_altitude: 38000,
       descent_rate: 5.5,
       time_step: 60,
     },
@@ -39,13 +41,14 @@ const PRESETS = [
   {
     id: "fast-ascent",
     name: "고속 상승 단기 미션",
-    description: "빠른 상승으로 단시간 내 버스트, 좁은 낙하 범위 예측",
+    description: "대전 기준 600g 소형 풍선, 빠른 상승으로 단시간 버스트",
     config: {
       latitude: 36.3504,
       longitude: 127.3845,
       launch_datetime: new Date(Date.now() + 3600 * 1000).toISOString().slice(0, 16) + ":00Z",
+      balloon_mass_g: 600,
+      payload_mass_g: 400,
       ascent_rate: 8.0,
-      burst_altitude: 25000,
       descent_rate: 8.0,
       time_step: 30,
     },
@@ -53,13 +56,14 @@ const PRESETS = [
   {
     id: "slow-float",
     name: "저속 장거리 드리프트",
-    description: "느린 상승으로 바람에 충분히 실려 원거리 낙하점 탐색",
+    description: "강릉 기준 1500g 풍선, 느린 상승으로 바람에 충분히 실려 원거리 예측",
     config: {
       latitude: 37.8228,
       longitude: 128.1555,
       launch_datetime: new Date(Date.now() + 3600 * 1000).toISOString().slice(0, 16) + ":00Z",
+      balloon_mass_g: 1500,
+      payload_mass_g: 300,
       ascent_rate: 2.5,
-      burst_altitude: 32000,
       descent_rate: 4.0,
       time_step: 60,
     },
@@ -80,13 +84,14 @@ router.post("/simulate", async (req, res) => {
   }
 
   const input: SimulationInput = {
-    latitude: parsed.data.latitude,
-    longitude: parsed.data.longitude,
+    latitude:       parsed.data.latitude,
+    longitude:      parsed.data.longitude,
     launch_datetime: parsed.data.launch_datetime,
-    ascent_rate: parsed.data.ascent_rate,
-    burst_altitude: parsed.data.burst_altitude,
-    descent_rate: parsed.data.descent_rate,
-    time_step: parsed.data.time_step ?? 60,
+    balloon_mass_g: parsed.data.balloon_mass_g,
+    payload_mass_g: parsed.data.payload_mass_g,
+    ascent_rate:    parsed.data.ascent_rate,
+    descent_rate:   parsed.data.descent_rate,
+    time_step:      parsed.data.time_step ?? 60,
   };
 
   try {

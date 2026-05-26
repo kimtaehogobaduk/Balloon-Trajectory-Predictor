@@ -7,6 +7,7 @@
  */
 
 export * from './apiError';
+export * from './balloonConfig';
 export * from './flightStats';
 export * from './healthStatus';
 export * from './preset';

@@ -22,19 +22,25 @@ export interface SimulationInput {
   /** ISO 8601 launch datetime (UTC) */
   launch_datetime: string;
   /**
-     * Balloon ascent rate in m/s
+     * Empty latex balloon mass in grams (determines burst diameter)
+     * @minimum 50
+     * @maximum 3000
+     */
+  balloon_mass_g: number;
+  /**
+     * Total payload mass in grams (instruments, camera, hardware)
+     * @minimum 0
+     * @maximum 10000
+     */
+  payload_mass_g: number;
+  /**
+     * Target balloon ascent rate in m/s at sea level
      * @minimum 0.5
      * @maximum 20
      */
   ascent_rate: number;
   /**
-     * Altitude at which the balloon bursts in meters
-     * @minimum 10000
-     * @maximum 45000
-     */
-  burst_altitude: number;
-  /**
-     * Parachute descent rate in m/s (positive = downward)
+     * Parachute descent rate in m/s at sea level (positive = downward)
      * @minimum 1
      * @maximum 30
      */

@@ -27,11 +27,14 @@ export const runSimulationBodyLatitudeMax = 90;
 export const runSimulationBodyLongitudeMin = -180;
 export const runSimulationBodyLongitudeMax = 180;
 
+export const runSimulationBodyBalloonMassGMin = 50;
+export const runSimulationBodyBalloonMassGMax = 3000;
+
+export const runSimulationBodyPayloadMassGMin = 0;
+export const runSimulationBodyPayloadMassGMax = 10000;
+
 export const runSimulationBodyAscentRateMin = 0.5;
 export const runSimulationBodyAscentRateMax = 20;
-
-export const runSimulationBodyBurstAltitudeMin = 10000;
-export const runSimulationBodyBurstAltitudeMax = 45000;
 
 export const runSimulationBodyDescentRateMax = 30;
 
@@ -43,9 +46,10 @@ export const RunSimulationBody = zod.object({
   "latitude": zod.number().min(runSimulationBodyLatitudeMin).max(runSimulationBodyLatitudeMax).describe('Launch latitude in decimal degrees'),
   "longitude": zod.number().min(runSimulationBodyLongitudeMin).max(runSimulationBodyLongitudeMax).describe('Launch longitude in decimal degrees'),
   "launch_datetime": zod.string().describe('ISO 8601 launch datetime (UTC)'),
-  "ascent_rate": zod.number().min(runSimulationBodyAscentRateMin).max(runSimulationBodyAscentRateMax).describe('Balloon ascent rate in m\/s'),
-  "burst_altitude": zod.number().min(runSimulationBodyBurstAltitudeMin).max(runSimulationBodyBurstAltitudeMax).describe('Altitude at which the balloon bursts in meters'),
-  "descent_rate": zod.number().min(1).max(runSimulationBodyDescentRateMax).describe('Parachute descent rate in m\/s (positive = downward)'),
+  "balloon_mass_g": zod.number().min(runSimulationBodyBalloonMassGMin).max(runSimulationBodyBalloonMassGMax).describe('Empty latex balloon mass in grams (determines burst diameter)'),
+  "payload_mass_g": zod.number().min(runSimulationBodyPayloadMassGMin).max(runSimulationBodyPayloadMassGMax).describe('Total payload mass in grams (instruments, camera, hardware)'),
+  "ascent_rate": zod.number().min(runSimulationBodyAscentRateMin).max(runSimulationBodyAscentRateMax).describe('Target balloon ascent rate in m\/s at sea level'),
+  "descent_rate": zod.number().min(1).max(runSimulationBodyDescentRateMax).describe('Parachute descent rate in m\/s at sea level (positive = downward)'),
   "time_step": zod.number().min(1).max(runSimulationBodyTimeStepMax).optional().describe('Simulation time step in seconds (default 60)')
 })
 
@@ -89,6 +93,13 @@ export const RunSimulationResponse = zod.object({
   "total_distance_km": zod.number().describe('Total path length in km'),
   "horizontal_drift_km": zod.number().describe('Straight-line distance from launch to landing in km')
 }),
+  "balloon_config": zod.object({
+  "fill_diameter_m": zod.number().describe('Balloon diameter at sea level fill (m)'),
+  "burst_diameter_m": zod.number().describe('Balloon diameter at burst (m)'),
+  "burst_altitude_m": zod.number().describe('Calculated theoretical burst altitude (m)'),
+  "neck_lift_n": zod.number().describe('Net upward force at sea level in Newtons'),
+  "volume_fill_m3": zod.number().describe('Fill volume at sea level in cubic metres')
+}),
   "wind_data_fetched_at": zod.string().describe('ISO 8601 datetime when wind data was fetched')
 })
 
@@ -103,11 +114,14 @@ export const getPresetsResponseConfigLatitudeMax = 90;
 export const getPresetsResponseConfigLongitudeMin = -180;
 export const getPresetsResponseConfigLongitudeMax = 180;
 
+export const getPresetsResponseConfigBalloonMassGMin = 50;
+export const getPresetsResponseConfigBalloonMassGMax = 3000;
+
+export const getPresetsResponseConfigPayloadMassGMin = 0;
+export const getPresetsResponseConfigPayloadMassGMax = 10000;
+
 export const getPresetsResponseConfigAscentRateMin = 0.5;
 export const getPresetsResponseConfigAscentRateMax = 20;
-
-export const getPresetsResponseConfigBurstAltitudeMin = 10000;
-export const getPresetsResponseConfigBurstAltitudeMax = 45000;
 
 export const getPresetsResponseConfigDescentRateMax = 30;
 
@@ -123,9 +137,10 @@ export const GetPresetsResponseItem = zod.object({
   "latitude": zod.number().min(getPresetsResponseConfigLatitudeMin).max(getPresetsResponseConfigLatitudeMax).describe('Launch latitude in decimal degrees'),
   "longitude": zod.number().min(getPresetsResponseConfigLongitudeMin).max(getPresetsResponseConfigLongitudeMax).describe('Launch longitude in decimal degrees'),
   "launch_datetime": zod.string().describe('ISO 8601 launch datetime (UTC)'),
-  "ascent_rate": zod.number().min(getPresetsResponseConfigAscentRateMin).max(getPresetsResponseConfigAscentRateMax).describe('Balloon ascent rate in m\/s'),
-  "burst_altitude": zod.number().min(getPresetsResponseConfigBurstAltitudeMin).max(getPresetsResponseConfigBurstAltitudeMax).describe('Altitude at which the balloon bursts in meters'),
-  "descent_rate": zod.number().min(1).max(getPresetsResponseConfigDescentRateMax).describe('Parachute descent rate in m\/s (positive = downward)'),
+  "balloon_mass_g": zod.number().min(getPresetsResponseConfigBalloonMassGMin).max(getPresetsResponseConfigBalloonMassGMax).describe('Empty latex balloon mass in grams (determines burst diameter)'),
+  "payload_mass_g": zod.number().min(getPresetsResponseConfigPayloadMassGMin).max(getPresetsResponseConfigPayloadMassGMax).describe('Total payload mass in grams (instruments, camera, hardware)'),
+  "ascent_rate": zod.number().min(getPresetsResponseConfigAscentRateMin).max(getPresetsResponseConfigAscentRateMax).describe('Target balloon ascent rate in m\/s at sea level'),
+  "descent_rate": zod.number().min(1).max(getPresetsResponseConfigDescentRateMax).describe('Parachute descent rate in m\/s at sea level (positive = downward)'),
   "time_step": zod.number().min(1).max(getPresetsResponseConfigTimeStepMax).optional().describe('Simulation time step in seconds (default 60)')
 })
 })
