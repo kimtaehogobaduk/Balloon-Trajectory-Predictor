@@ -56,9 +56,13 @@ export const RunSimulationResponse = zod.object({
   "longitude": zod.number(),
   "altitude": zod.number().describe('Altitude in meters'),
   "phase": zod.string().describe('ascent or descent'),
-  "wind_speed": zod.number().describe('Wind speed in m\/s at this altitude'),
-  "wind_direction": zod.number().describe('Wind direction in degrees (meteorological)'),
-  "pressure_hpa": zod.number().describe('Atmospheric pressure in hPa at this altitude')
+  "wind_speed": zod.number().describe('Interpolated wind speed in m\/s at this altitude'),
+  "wind_direction": zod.number().describe('Interpolated wind direction in degrees (meteorological)'),
+  "pressure_hpa": zod.number().describe('Atmospheric pressure in hPa at this altitude'),
+  "horizontal_speed": zod.number().describe('Horizontal ground speed in m\/s'),
+  "vertical_speed": zod.number().describe('Vertical speed in m\/s (positive = ascending, negative = descending)'),
+  "total_speed": zod.number().describe('Total 3D speed magnitude in m\/s'),
+  "bearing": zod.number().describe('Direction of travel in degrees (0=north, 90=east)')
 })),
   "landing": zod.object({
   "time": zod.string().describe('ISO 8601 datetime at this point'),
@@ -66,9 +70,13 @@ export const RunSimulationResponse = zod.object({
   "longitude": zod.number(),
   "altitude": zod.number().describe('Altitude in meters'),
   "phase": zod.string().describe('ascent or descent'),
-  "wind_speed": zod.number().describe('Wind speed in m\/s at this altitude'),
-  "wind_direction": zod.number().describe('Wind direction in degrees (meteorological)'),
-  "pressure_hpa": zod.number().describe('Atmospheric pressure in hPa at this altitude')
+  "wind_speed": zod.number().describe('Interpolated wind speed in m\/s at this altitude'),
+  "wind_direction": zod.number().describe('Interpolated wind direction in degrees (meteorological)'),
+  "pressure_hpa": zod.number().describe('Atmospheric pressure in hPa at this altitude'),
+  "horizontal_speed": zod.number().describe('Horizontal ground speed in m\/s'),
+  "vertical_speed": zod.number().describe('Vertical speed in m\/s (positive = ascending, negative = descending)'),
+  "total_speed": zod.number().describe('Total 3D speed magnitude in m\/s'),
+  "bearing": zod.number().describe('Direction of travel in degrees (0=north, 90=east)')
 }),
   "stats": zod.object({
   "total_duration_seconds": zod.number(),
@@ -76,6 +84,8 @@ export const RunSimulationResponse = zod.object({
   "descent_duration_seconds": zod.number(),
   "max_altitude": zod.number().describe('Maximum altitude reached in meters'),
   "max_wind_speed": zod.number().describe('Peak wind speed encountered in m\/s'),
+  "max_horizontal_speed": zod.number().describe('Peak horizontal ground speed in m\/s'),
+  "max_total_speed": zod.number().describe('Peak 3D speed magnitude in m\/s'),
   "total_distance_km": zod.number().describe('Total path length in km'),
   "horizontal_drift_km": zod.number().describe('Straight-line distance from launch to landing in km')
 }),

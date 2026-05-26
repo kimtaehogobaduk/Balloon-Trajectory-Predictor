@@ -15,10 +15,18 @@ export interface TrajectoryPoint {
   altitude: number;
   /** ascent or descent */
   phase: string;
-  /** Wind speed in m/s at this altitude */
+  /** Interpolated wind speed in m/s at this altitude */
   wind_speed: number;
-  /** Wind direction in degrees (meteorological) */
+  /** Interpolated wind direction in degrees (meteorological) */
   wind_direction: number;
   /** Atmospheric pressure in hPa at this altitude */
   pressure_hpa: number;
+  /** Horizontal ground speed in m/s */
+  horizontal_speed: number;
+  /** Vertical speed in m/s (positive = ascending, negative = descending) */
+  vertical_speed: number;
+  /** Total 3D speed magnitude in m/s */
+  total_speed: number;
+  /** Direction of travel in degrees (0=north, 90=east) */
+  bearing: number;
 }

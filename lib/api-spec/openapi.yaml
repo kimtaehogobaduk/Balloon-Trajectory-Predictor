@@ -140,6 +140,10 @@ components:
         - wind_speed
         - wind_direction
         - pressure_hpa
+        - horizontal_speed
+        - vertical_speed
+        - total_speed
+        - bearing
       properties:
         time:
           type: string
@@ -156,13 +160,25 @@ components:
           description: "ascent or descent"
         wind_speed:
           type: number
-          description: Wind speed in m/s at this altitude
+          description: Interpolated wind speed in m/s at this altitude
         wind_direction:
           type: number
-          description: Wind direction in degrees (meteorological)
+          description: Interpolated wind direction in degrees (meteorological)
         pressure_hpa:
           type: number
           description: Atmospheric pressure in hPa at this altitude
+        horizontal_speed:
+          type: number
+          description: Horizontal ground speed in m/s
+        vertical_speed:
+          type: number
+          description: Vertical speed in m/s (positive = ascending, negative = descending)
+        total_speed:
+          type: number
+          description: Total 3D speed magnitude in m/s
+        bearing:
+          type: number
+          description: Direction of travel in degrees (0=north, 90=east)
 
     FlightStats:
       type: object
@@ -172,6 +188,8 @@ components:
         - descent_duration_seconds
         - max_altitude
         - max_wind_speed
+        - max_horizontal_speed
+        - max_total_speed
         - total_distance_km
         - horizontal_drift_km
       properties:
@@ -187,6 +205,12 @@ components:
         max_wind_speed:
           type: number
           description: Peak wind speed encountered in m/s
+        max_horizontal_speed:
+          type: number
+          description: Peak horizontal ground speed in m/s
+        max_total_speed:
+          type: number
+          description: Peak 3D speed magnitude in m/s
         total_distance_km:
           type: number
           description: Total path length in km

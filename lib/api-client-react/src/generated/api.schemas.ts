@@ -59,12 +59,20 @@ export interface TrajectoryPoint {
   altitude: number;
   /** ascent or descent */
   phase: string;
-  /** Wind speed in m/s at this altitude */
+  /** Interpolated wind speed in m/s at this altitude */
   wind_speed: number;
-  /** Wind direction in degrees (meteorological) */
+  /** Interpolated wind direction in degrees (meteorological) */
   wind_direction: number;
   /** Atmospheric pressure in hPa at this altitude */
   pressure_hpa: number;
+  /** Horizontal ground speed in m/s */
+  horizontal_speed: number;
+  /** Vertical speed in m/s (positive = ascending, negative = descending) */
+  vertical_speed: number;
+  /** Total 3D speed magnitude in m/s */
+  total_speed: number;
+  /** Direction of travel in degrees (0=north, 90=east) */
+  bearing: number;
 }
 
 export interface FlightStats {
@@ -75,6 +83,10 @@ export interface FlightStats {
   max_altitude: number;
   /** Peak wind speed encountered in m/s */
   max_wind_speed: number;
+  /** Peak horizontal ground speed in m/s */
+  max_horizontal_speed: number;
+  /** Peak 3D speed magnitude in m/s */
+  max_total_speed: number;
   /** Total path length in km */
   total_distance_km: number;
   /** Straight-line distance from launch to landing in km */

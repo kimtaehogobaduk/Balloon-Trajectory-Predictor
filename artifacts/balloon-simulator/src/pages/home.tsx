@@ -1,14 +1,16 @@
-import React, { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { format, addHours } from "date-fns";
-import { Map as MapIcon, Crosshair, Wind, Navigation, Activity, Clock, Layers, Rocket, Settings2, Download } from "lucide-react";
+import { Map as MapIcon, Crosshair, Wind, Navigation, Activity, Clock, Layers, Rocket, Settings2, Play, Pause, Video } from "lucide-react";
+import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
 import { useRunSimulation, useGetPresets, getGetPresetsQueryKey } from "@workspace/api-client-react";
 import type { SimulationInput, SimulationResult } from "@workspace/api-client-react";
 
 import { BalloonMap } from "@/components/Map";
+import BalloonCamera from "@/components/BalloonCamera";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +20,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 const formSchema = z.object({
   latitude: z.coerce.number().min(-90).max(90),
@@ -31,6 +35,12 @@ const formSchema = z.object({
 
 export default function Home() {
   const [result, setResult] = useState<SimulationResult | null>(null);
+  
+  // Animation State
+  const [animFrame, setAnimFrame] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState(1);
+  const [videoViewOpen, setVideoViewOpen] = useState(false);
 
   const { data: presets } = useGetPresets({
     query: { queryKey: getGetPresetsQueryKey() }
@@ -52,7 +62,6 @@ export default function Home() {
   });
 
   const handleRunSimulation = (values: z.infer<typeof formSchema>) => {
-    // Format to ISO8601 for the API
     const date = new Date(values.launch_datetime);
     
     runSim.mutate(
@@ -65,6 +74,8 @@ export default function Home() {
       {
         onSuccess: (data) => {
           setResult(data);
+          setAnimFrame(0);
+          setIsPlaying(false);
         }
       }
     );
@@ -80,17 +91,46 @@ export default function Home() {
     }
   };
 
-  // Watch lat/lng for map preview
   const currentLat = form.watch("latitude");
   const currentLng = form.watch("longitude");
+
+  // Playback effect
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (isPlaying && result?.trajectory) {
+      interval = setInterval(() => {
+        setAnimFrame(prev => {
+          if (prev >= result.trajectory.length - 1) {
+            setIsPlaying(false);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, 100 / playSpeed);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, playSpeed, result]);
+
+  // Chart data prep
+  const chartData = result?.trajectory.map(pt => {
+    const timeMins = (new Date(pt.time).getTime() - new Date(result.trajectory[0].time).getTime()) / 60000;
+    return {
+      ...pt,
+      timeMins,
+      ascentAlt: pt.phase === "ascent" ? pt.altitude : null,
+      descentAlt: pt.phase === "descent" ? pt.altitude : null,
+      abs_vertical_speed: Math.abs(pt.vertical_speed)
+    };
+  });
+  
+  const burstPointMin = chartData?.find(d => d.phase === "descent")?.timeMins || 0;
 
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden font-sans selection:bg-primary/30">
       
-      {/* Left Sidebar - Controls & Stats */}
+      {/* Left Sidebar */}
       <div className="w-[480px] min-w-[480px] h-full flex flex-col border-r border-border bg-card/50 backdrop-blur shadow-2xl relative z-10">
         
-        {/* Header */}
         <div className="px-6 py-5 border-b border-border bg-card">
           <div className="flex items-center gap-3 mb-1">
             <div className="w-8 h-8 rounded bg-primary/20 flex items-center justify-center border border-primary/50 text-primary">
@@ -237,7 +277,7 @@ export default function Home() {
 
             <Separator className="bg-border/50" />
 
-            {/* Results Section */}
+            {/* Results & Animation Controls */}
             {result && (
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="flex items-center justify-between">
@@ -248,6 +288,78 @@ export default function Home() {
                   <Badge variant="outline" className="font-mono text-[10px] bg-primary/10 text-primary border-primary/20">
                     T+{Math.floor(result.stats.total_duration_seconds / 60)}m
                   </Badge>
+                </div>
+
+                {/* Animation Controls */}
+                <div className="p-4 bg-black/40 border border-border rounded-lg space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <Button 
+                      variant="outline" 
+                      size="icon" 
+                      onClick={() => setIsPlaying(!isPlaying)}
+                      className="h-8 w-8 bg-muted/50"
+                    >
+                      {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                    </Button>
+                    
+                    <div className="flex-1 flex items-center gap-3">
+                      <Slider
+                        value={[animFrame]}
+                        min={0}
+                        max={result.trajectory.length - 1}
+                        step={1}
+                        onValueChange={(vals) => setAnimFrame(vals[0])}
+                        className="flex-1"
+                      />
+                      <span className="text-xs font-mono text-muted-foreground w-12 text-right">
+                        {Math.floor((animFrame / (result.trajectory.length - 1)) * 100)}%
+                      </span>
+                    </div>
+
+                    <Select value={playSpeed.toString()} onValueChange={(v) => setPlaySpeed(parseInt(v))}>
+                      <SelectTrigger className="w-[70px] h-8 text-xs font-mono">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1x</SelectItem>
+                        <SelectItem value="5">5x</SelectItem>
+                        <SelectItem value="10">10x</SelectItem>
+                        <SelectItem value="20">20x</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Live Telemetry Panel */}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Alt:</span>
+                      <span className="font-bold text-foreground">{result.trajectory[animFrame].altitude.toFixed(0)}m</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Wind:</span>
+                      <span className="text-yellow-500">{result.trajectory[animFrame].wind_speed.toFixed(1)}m/s</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">V.Speed:</span>
+                      <span className={result.trajectory[animFrame].vertical_speed >= 0 ? "text-green-500" : "text-red-500"}>
+                        {result.trajectory[animFrame].vertical_speed > 0 ? "+" : ""}{result.trajectory[animFrame].vertical_speed.toFixed(1)}m/s
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">H.Speed:</span>
+                      <span className="text-cyan-500">{result.trajectory[animFrame].horizontal_speed.toFixed(1)}m/s</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Phase:</span>
+                      <span className={result.trajectory[animFrame].phase === "ascent" ? "text-cyan-500" : "text-orange-500"}>
+                        {result.trajectory[animFrame].phase.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Press:</span>
+                      <span>{result.trajectory[animFrame].pressure_hpa.toFixed(1)}hPa</span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -271,17 +383,54 @@ export default function Home() {
                     value={`${result.stats.horizontal_drift_km.toFixed(1)} km`}
                     icon={<Navigation className="w-3.5 h-3.5 text-muted-foreground" />}
                   />
-                  <StatCard 
-                    label="Ascent Time" 
-                    value={`${Math.floor(result.stats.ascent_duration_seconds / 60)}m`}
-                    className="bg-blue-500/5 border-blue-500/10"
-                  />
-                  <StatCard 
-                    label="Descent Time" 
-                    value={`${Math.floor(result.stats.descent_duration_seconds / 60)}m`}
-                    className="bg-orange-500/5 border-orange-500/10"
-                  />
                 </div>
+
+                {/* Charts */}
+                {chartData && (
+                  <Collapsible className="w-full border border-border rounded-lg bg-black/20">
+                    <CollapsibleTrigger className="flex w-full items-center justify-between p-4 text-xs font-bold uppercase tracking-wider hover:bg-muted/30">
+                      FLIGHT CHARTS
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="p-4 pt-0 space-y-6">
+                      
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-mono text-muted-foreground text-center">Altitude Profile</div>
+                        <div className="h-[220px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                              <XAxis dataKey="timeMins" tick={{fontSize: 10}} stroke="#666" />
+                              <YAxis tick={{fontSize: 10}} stroke="#666" />
+                              <RechartsTooltip contentStyle={{backgroundColor: '#111', border: '1px solid #333', fontSize: '12px'}} />
+                              <ReferenceLine x={burstPointMin} stroke="#eab308" strokeDasharray="3 3" />
+                              <Line type="monotone" dataKey="ascentAlt" stroke="#0ea5e9" strokeWidth={2} dot={false} isAnimationActive={false} />
+                              <Line type="monotone" dataKey="descentAlt" stroke="#f97316" strokeWidth={2} dot={false} isAnimationActive={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-mono text-muted-foreground text-center">Speed Profile</div>
+                        <div className="h-[220px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                              <XAxis dataKey="timeMins" tick={{fontSize: 10}} stroke="#666" />
+                              <YAxis tick={{fontSize: 10}} stroke="#666" />
+                              <RechartsTooltip contentStyle={{backgroundColor: '#111', border: '1px solid #333', fontSize: '12px'}} />
+                              <Legend wrapperStyle={{fontSize: '10px'}} />
+                              <Line type="monotone" dataKey="total_speed" name="Total Speed" stroke="#fff" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                              <Line type="monotone" dataKey="horizontal_speed" name="Horizontal Speed" stroke="#0ea5e9" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                              <Line type="monotone" dataKey="abs_vertical_speed" name="Vertical Speed (Abs)" stroke="#eab308" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
 
                 <Accordion type="single" collapsible className="w-full">
                   <AccordionItem value="trajectory" className="border-border">
@@ -336,8 +485,23 @@ export default function Home() {
         <BalloonMap 
           simulationResult={result} 
           launchPos={{ lat: currentLat || 37.5665, lng: currentLng || 126.9780 }} 
+          animFrame={result ? animFrame : undefined}
         />
         
+        {/* Map Header Overlay */}
+        <div className="absolute top-4 right-4 z-[400] flex gap-2">
+          {result && (
+            <Button 
+              variant="secondary" 
+              className="bg-background/90 backdrop-blur shadow-lg border-border font-mono font-bold text-xs flex items-center gap-2"
+              onClick={() => setVideoViewOpen(true)}
+            >
+              <Video className="w-4 h-4" />
+              VIDEO VIEW
+            </Button>
+          )}
+        </div>
+
         {/* Map UI overlays */}
         <div className="absolute bottom-6 right-6 z-[400] flex gap-2">
           {result && (
@@ -354,6 +518,19 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      {videoViewOpen && result && (
+        <BalloonCamera 
+          trajectory={result.trajectory}
+          animFrame={animFrame}
+          setAnimFrame={setAnimFrame}
+          isPlaying={isPlaying}
+          setIsPlaying={setIsPlaying}
+          playSpeed={playSpeed}
+          setPlaySpeed={setPlaySpeed}
+          onClose={() => setVideoViewOpen(false)}
+        />
+      )}
     </div>
   );
 }
