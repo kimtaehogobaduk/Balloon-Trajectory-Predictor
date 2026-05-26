@@ -141,70 +141,58 @@ function burstDiameter(balloonMassKg: number): number {
 }
 
 export interface BalloonConfig {
-  fill_diameter_m:  number;
-  burst_diameter_m: number;
-  burst_altitude_m: number;
-  neck_lift_n:      number;
-  volume_fill_m3:   number;
+  fill_diameter_m:   number;
+  burst_diameter_m:  number;
+  burst_altitude_m:  number;
+  neck_lift_n:       number;
+  volume_fill_m3:    number;
+  ascent_rate_ms:    number;
+  descent_rate_sl_ms: number;
 }
 
 /**
- * Given balloon mass, payload mass, and target sea-level ascent rate,
- * returns the theoretical balloon configuration (fill size + burst altitude).
+ * Derives all balloon configuration values from physical inputs.
  *
- * Force balance at sea-level terminal ascent velocity v₀:
- *   (ρ_air − ρ_He) × V × g  =  m_total × g  +  ½ C_D ρ_air π r² v₀²
- * → cubic in fill radius r, solved by Newton-Raphson.
- *
- * Burst altitude: binary search for h where
- *   (P₀/P(h)) × (T(h)/T₀)  =  V_burst / V_fill
+ * - Fill radius comes directly from helium_volume_m3 (no Newton-Raphson needed).
+ * - Ascent rate at sea level is the terminal velocity of the force balance.
+ * - Burst altitude is binary-searched where V(h) = V_burst.
+ * - Descent rate at sea level uses parachute drag physics.
  */
 export function calculateBalloonConfig(
-  balloonMassG: number,
-  payloadMassG: number,
-  ascentRateMs: number
+  balloonMassG:      number,
+  payloadMassG:      number,
+  heliumVolumeM3:    number,
+  parachuteDiameterM: number,
+  parachuteCd:       number,
 ): BalloonConfig {
-  const m_balloon  = balloonMassG  / 1000; // kg
-  const m_payload  = payloadMassG  / 1000; // kg
-  const m_total    = m_balloon + m_payload;
-  const v0         = ascentRateMs;
+  const m_total = (balloonMassG + payloadMassG) / 1000; // kg
 
-  // Sea-level air density from ISA constants
-  const rho0       = P0 / (R * T0); // ≈ 1.225 kg/m³
-  const lift_coeff = rho0 - RHO_HE_SL; // ≈ 1.056 kg/m³ net specific lift
+  // ── Fill geometry (direct from helium volume) ─────────────────────────────
+  const r_fill  = Math.cbrt(3 * heliumVolumeM3 / (4 * Math.PI));
+  const d_fill  = r_fill * 2;
 
-  // Burst geometry
-  const d_burst  = burstDiameter(m_balloon);
-  const r_burst  = d_burst / 2;
-  const V_burst  = (4 / 3) * Math.PI * r_burst ** 3;
+  // ── Burst geometry (from balloon mass) ───────────────────────────────────
+  const d_burst = burstDiameter(balloonMassG / 1000);
+  const r_burst = d_burst / 2;
+  const V_burst = (4 / 3) * Math.PI * r_burst ** 3;
 
-  // Drag coefficient (for ascent force balance)
-  const drag_k   = 0.5 * C_D_BALLOON * rho0 * Math.PI; // × r² × v₀²
+  // ── Neck lift (net upward force at sea level) ─────────────────────────────
+  const rho0      = P0 / (R * T0); // ≈ 1.225 kg/m³
+  const rho_He0   = P0 / (RHO_HE_SL > 0 ? (2077 * T0) : 1); // use formula consistently
+  const lift_coeff_sl = rho0 - (P0 / (2077 * T0));
+  const gross_lift_N  = lift_coeff_sl * heliumVolumeM3 * G;
+  const neck_lift_N   = gross_lift_N - m_total * G;
 
-  // Newton-Raphson on f(r) = (4/3)π·lift_coeff·r³ - drag_k·r²·v₀² - m_total·g = 0
-  const A        = (4 / 3) * Math.PI * lift_coeff * G;
-  const B        = drag_k * v0 * v0;
-  const C        = m_total * G;
+  // ── Sea-level ascent rate ─────────────────────────────────────────────────
+  const ascent_rate_ms = ascentRatePhysics(0, heliumVolumeM3, m_total);
 
-  // Initial guess: radius from pure buoyancy (no drag)
-  let r = Math.cbrt((3 * C) / (4 * Math.PI * lift_coeff * G));
-  for (let i = 0; i < 50; i++) {
-    const f  = A * r ** 3 - B * r ** 2 - C;
-    const df = 3 * A * r ** 2 - 2 * B * r;
-    if (Math.abs(df) < 1e-12) break;
-    const dr = f / df;
-    r -= dr;
-    if (Math.abs(dr) < 1e-9) break;
-  }
-  r = Math.max(r, 0.3); // floor at 30 cm
+  // ── Sea-level descent rate ────────────────────────────────────────────────
+  const descent_rate_sl_ms = descentRatePhysics(0, parachuteDiameterM, parachuteCd, m_total);
 
-  const V_fill  = (4 / 3) * Math.PI * r ** 3;
-  const neck_lift = (lift_coeff * V_fill - m_total) * G; // N (net upward)
-
-  // Burst altitude: find h where expansion ratio = V_burst/V_fill
-  const expTarget = V_burst / V_fill;
-  let hLo = 0, hHi = 60000;
-  for (let i = 0; i < 60; i++) {
+  // ── Burst altitude: binary search where expansion = V_burst / V_fill ──────
+  const expTarget = V_burst / heliumVolumeM3;
+  let hLo = 0, hHi = 65000;
+  for (let i = 0; i < 64; i++) {
     const hMid = (hLo + hHi) / 2;
     const P    = altitudeToPressure(hMid);
     const T    = isaTemperature(hMid);
@@ -215,11 +203,13 @@ export function calculateBalloonConfig(
   const burst_alt = (hLo + hHi) / 2;
 
   return {
-    fill_diameter_m:  Math.round(r * 2 * 1000) / 1000,
-    burst_diameter_m: Math.round(d_burst * 1000) / 1000,
-    burst_altitude_m: Math.round(burst_alt),
-    neck_lift_n:      Math.round(neck_lift * 100) / 100,
-    volume_fill_m3:   Math.round(V_fill * 1000) / 1000,
+    fill_diameter_m:    Math.round(d_fill * 1000) / 1000,
+    burst_diameter_m:   Math.round(d_burst * 1000) / 1000,
+    burst_altitude_m:   Math.round(burst_alt),
+    neck_lift_n:        Math.round(neck_lift_N * 100) / 100,
+    volume_fill_m3:     Math.round(heliumVolumeM3 * 1000) / 1000,
+    ascent_rate_ms:     Math.round(ascent_rate_ms * 100) / 100,
+    descent_rate_sl_ms: Math.round(descent_rate_sl_ms * 100) / 100,
   };
 }
 
@@ -235,34 +225,49 @@ function airDensity(h: number): number {
 /** Sea-level air density (kg/m³) */
 const RHO_0 = P0 / (R * T0); // ≈ 1.225 kg/m³
 
+const R_HE = 2077; // J/(kg·K) – helium specific gas constant
+
 /**
- * Effective ascent rate at altitude h.
+ * Terminal ascent rate at altitude h given sea-level helium fill volume.
  *
- * Physical derivation:
- *   – Net lift (buoyancy − weight) is approximately constant throughout flight
- *     because ρ_air × V ≈ const (gas mass conserved, volume ∝ 1/ρ_air).
- *   – Drag ∝ ρ_air(h) × A(h) × v², and A(h) ∝ V(h)^(2/3) ∝ ρ_air(h)^(−2/3).
- *   – At terminal velocity: F_net = F_drag → v ∝ ρ_air(h)^(−1/6).
+ * At each altitude h the balloon volume expands:
+ *   V(h) = V_fill × (P₀/P(h)) × (T(h)/T₀)   [ideal gas]
  *
- * Result: ascent rate roughly doubles from sea level to ~30 km.
+ * Net force balance → terminal velocity:
+ *   (ρ_air − ρ_He) × V × g − m_total × g = ½ C_D ρ_air π r² v²
+ *   v_t = √( F_net / (½ C_D ρ_air π r²) )
  */
-function effectiveAscentRate(h: number, v0: number): number {
-  return v0 * Math.pow(RHO_0 / airDensity(h), 1 / 6);
+function ascentRatePhysics(h: number, V_fill_sl: number, m_total: number): number {
+  const P       = altitudeToPressure(Math.max(h, 0));
+  const T       = isaTemperature(Math.max(h, 0));
+  const rho_air = P / (R * T);
+  const rho_He  = P / (R_HE * T);
+
+  const expansion = (P0 / P) * (T / T0);
+  const V   = V_fill_sl * expansion;
+  const r   = Math.cbrt(3 * V / (4 * Math.PI));
+
+  const net_force = (rho_air - rho_He) * V * G - m_total * G;
+  if (net_force <= 0) return 0.3; // neutral / negative buoyancy
+
+  const drag_denom = 0.5 * C_D_BALLOON * rho_air * Math.PI * r * r;
+  return Math.min(50, Math.sqrt(net_force / drag_denom));
 }
 
 /**
- * Effective descent rate (magnitude) at altitude h.
+ * Parachute terminal descent speed (magnitude) at altitude h.
  *
- * Physical derivation:
- *   Parachute terminal velocity: F_drag = m·g
- *   0.5 × C_D × ρ_air(h) × A × v² = m·g
- *   → v(h) = v_ground × √(ρ₀ / ρ_air(h))
+ *   ½ C_D ρ_air(h) A v² = m_total g
+ *   v(h) = √( 2 m g / (C_D ρ_air(h) A) )
  *
- * Capped at 90 m/s (hypersonic would require different model).
- * At 30 km: typical descent ≈ 6 × √(68) ≈ 50 m/s.
+ * Capped at 150 m/s to avoid hypersonic regime where this model breaks down.
  */
-function effectiveDescentRate(h: number, v0: number): number {
-  return Math.min(v0 * Math.sqrt(RHO_0 / airDensity(h)), 90);
+function descentRatePhysics(h: number, parachuteDiamM: number, parachuteCd: number, m_total: number): number {
+  const P       = altitudeToPressure(Math.max(h, 0));
+  const T       = isaTemperature(Math.max(h, 0));
+  const rho_air = P / (R * T);
+  const A_chute = Math.PI * (parachuteDiamM / 2) ** 2;
+  return Math.min(150, Math.sqrt(2 * m_total * G / (parachuteCd * rho_air * A_chute)));
 }
 
 /**
@@ -390,24 +395,43 @@ export interface SimulationResult {
 }
 
 export interface SimulationInput {
-  latitude: number;
-  longitude: number;
-  launch_datetime: string;
-  balloon_mass_g: number;
-  payload_mass_g: number;
-  ascent_rate: number;
-  descent_rate: number;
-  time_step?: number;
+  latitude:            number;
+  longitude:           number;
+  launch_datetime:     string;
+  balloon_mass_g:      number;
+  payload_mass_g:      number;
+  helium_volume_m3:    number;
+  parachute_diameter_m: number;
+  parachute_cd:        number;
+  time_step?:          number;
 }
 
 // ─── Main simulation ──────────────────────────────────────────────────────────
 
 export async function runBalloonSimulation(input: SimulationInput): Promise<SimulationResult> {
-  const { latitude, longitude, launch_datetime, balloon_mass_g, payload_mass_g, ascent_rate, descent_rate, time_step = 60 } = input;
+  const {
+    latitude, longitude, launch_datetime,
+    balloon_mass_g, payload_mass_g,
+    helium_volume_m3, parachute_diameter_m, parachute_cd,
+    time_step = 60,
+  } = input;
 
-  // ── Derive burst altitude from balloon physics ──────────────────────────────
-  const balloonConfig  = calculateBalloonConfig(balloon_mass_g, payload_mass_g, ascent_rate);
+  const m_total = (balloon_mass_g + payload_mass_g) / 1000; // kg
+
+  // ── Derive all balloon parameters from physical inputs ──────────────────────
+  const balloonConfig  = calculateBalloonConfig(
+    balloon_mass_g, payload_mass_g, helium_volume_m3, parachute_diameter_m, parachute_cd
+  );
   const burst_altitude = balloonConfig.burst_altitude_m;
+
+  // ── Guard: minimum lift check ───────────────────────────────────────────────
+  if (balloonConfig.ascent_rate_ms < 0.3) {
+    throw new Error(
+      `헬륨 부력 부족: 현재 ${helium_volume_m3}m³ 헬륨으로는 ` +
+      `${balloon_mass_g}g 풍선 + ${payload_mass_g}g 탑재물을 ` +
+      `들어올리기 어렵습니다. 헬륨량을 늘려주세요.`
+    );
+  }
 
   const windFetchedAt = new Date().toISOString();
   const windCache     = await fetchWindCache(latitude, longitude);
@@ -443,19 +467,19 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
     turbVz = turbVz * (1 - turbTheta) + (Math.random() - 0.5) * sigma * Math.sqrt(2 * turbTheta) * 3.5;
     turbVz = Math.max(-3, Math.min(3, turbVz)); // hard clamp
 
-    // ── Vertical speed: physics-based, not constant ───────────────────────────
+    // ── Vertical speed: full per-step balloon/parachute physics ──────────────
     let vertSpeedMs: number;
     if (phase === "ascent") {
-      // Effective rate rises with altitude (lower air density → less drag)
-      const physRate = effectiveAscentRate(alt, ascent_rate);
-      // Near burst: extra overinflation drag slows the balloon
+      // Full force balance per step — accounts for balloon expansion & density change
+      const physRate = ascentRatePhysics(alt, helium_volume_m3, m_total);
+      // Near burst: overinflation adds drag (latex stretch resistance)
       const nearBurstFactor = alt > burst_altitude - 3000
         ? 1 - 0.35 * ((alt - (burst_altitude - 3000)) / 3000)
         : 1;
       vertSpeedMs = Math.max(0.3, physRate * nearBurstFactor + turbVz);
     } else {
-      // Parachute: fast at altitude, slows dramatically near ground
-      const physRate = effectiveDescentRate(alt, descent_rate);
+      // Parachute: terminal velocity = √(2mg / (C_D ρ(h) A)) — fast at altitude
+      const physRate = descentRatePhysics(alt, parachute_diameter_m, parachute_cd, m_total);
       vertSpeedMs = -(Math.max(0.5, physRate + turbVz));
     }
 
@@ -505,7 +529,7 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
       const landTMs = tMs + time_step * 1000;
       const [lx, ly] = getInterpolatedWind(windCache, P0 / 100, landTMs);
       const landWindSpeed = Math.sqrt(lx * lx + ly * ly);
-      const landVDesc     = effectiveDescentRate(0, descent_rate);
+      const landVDesc     = descentRatePhysics(0, parachute_diameter_m, parachute_cd, m_total);
       trajectory.push({
         time:             new Date(landTMs).toISOString(),
         latitude:         Math.round(lat * 100000) / 100000,

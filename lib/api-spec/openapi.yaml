@@ -93,8 +93,9 @@ components:
         - launch_datetime
         - balloon_mass_g
         - payload_mass_g
-        - ascent_rate
-        - descent_rate
+        - helium_volume_m3
+        - parachute_diameter_m
+        - parachute_cd
       properties:
         latitude:
           type: number
@@ -119,16 +120,25 @@ components:
           description: Total payload mass in grams (instruments, camera, hardware)
           minimum: 0
           maximum: 10000
-        ascent_rate:
+        helium_volume_m3:
           type: number
-          description: Target balloon ascent rate in m/s at sea level
-          minimum: 0.5
-          maximum: 20
-        descent_rate:
+          description: >
+            Volume of helium loaded at sea level (m³). Determines fill size,
+            neck lift, and sea-level ascent rate via force balance.
+          minimum: 0.1
+          maximum: 500
+        parachute_diameter_m:
           type: number
-          description: Parachute descent rate in m/s at sea level (positive = downward)
-          minimum: 1
-          maximum: 30
+          description: Parachute canopy diameter in metres
+          minimum: 0.2
+          maximum: 10
+        parachute_cd:
+          type: number
+          description: >
+            Parachute drag coefficient. Typical values:
+            hemispheric 0.75, octagonal 0.85, cross/cruciform 0.97
+          minimum: 0.3
+          maximum: 1.5
         time_step:
           type: number
           description: Simulation time step in seconds (default 60)
@@ -143,6 +153,8 @@ components:
         - burst_altitude_m
         - neck_lift_n
         - volume_fill_m3
+        - ascent_rate_ms
+        - descent_rate_sl_ms
       properties:
         fill_diameter_m:
           type: number
@@ -158,7 +170,13 @@ components:
           description: Net upward force at sea level in Newtons
         volume_fill_m3:
           type: number
-          description: Fill volume at sea level in cubic metres
+          description: Fill volume at sea level in cubic metres (equals helium_volume_m3)
+        ascent_rate_ms:
+          type: number
+          description: Calculated sea-level terminal ascent rate (m/s)
+        descent_rate_sl_ms:
+          type: number
+          description: Calculated sea-level parachute descent rate (m/s)
 
     TrajectoryPoint:
       type: object

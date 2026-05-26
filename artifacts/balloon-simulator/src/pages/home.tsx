@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -36,15 +36,45 @@ const BALLOON_SIZES = [
   { value: "3000", label: "3000g (특대, ~13.0m burst)" },
 ];
 
+const PARACHUTE_TYPES = [
+  { value: "cross",         label: "십자형 (Cross/Cruciform)", cd: 0.97 },
+  { value: "octagonal",     label: "팔각형 (Octagonal)",       cd: 0.85 },
+  { value: "hemispheric",   label: "반구형 (Hemispheric)",     cd: 0.75 },
+  { value: "flat_circular", label: "평면원형 (Flat Circular)", cd: 0.75 },
+];
+
+// Sea-level physics preview (no server round-trip)
+const RHO_AIR_SL = 1.225;
+const RHO_HE_SL  = 101325 / (2077 * 288.15);
+const G_CONST    = 9.80665;
+const C_D_BALL   = 0.47;
+
+function previewAscentRate(heVol: number, balloonG: number, payloadG: number): number | null {
+  if (!heVol || !balloonG) return null;
+  const m = (balloonG + payloadG) / 1000;
+  const r = Math.cbrt(3 * heVol / (4 * Math.PI));
+  const net = (RHO_AIR_SL - RHO_HE_SL) * heVol * G_CONST - m * G_CONST;
+  if (net <= 0) return 0;
+  return Math.sqrt(net / (0.5 * C_D_BALL * RHO_AIR_SL * Math.PI * r * r));
+}
+
+function previewDescentRate(diameter: number, cd: number, balloonG: number, payloadG: number): number | null {
+  if (!diameter || !cd || !balloonG) return null;
+  const m = (balloonG + payloadG) / 1000;
+  const A = Math.PI * (diameter / 2) ** 2;
+  return Math.sqrt(2 * m * G_CONST / (cd * RHO_AIR_SL * A));
+}
+
 const formSchema = z.object({
-  latitude: z.coerce.number().min(-90).max(90),
-  longitude: z.coerce.number().min(-180).max(180),
-  launch_datetime: z.string().min(1, "Launch datetime is required"),
-  balloon_mass_g: z.coerce.number().min(50).max(3000),
-  payload_mass_g: z.coerce.number().min(0).max(10000),
-  ascent_rate: z.coerce.number().min(0.5).max(20),
-  descent_rate: z.coerce.number().min(1).max(30),
-  time_step: z.coerce.number().min(1).max(300).default(60),
+  latitude:             z.coerce.number().min(-90).max(90),
+  longitude:            z.coerce.number().min(-180).max(180),
+  launch_datetime:      z.string().min(1, "Launch datetime is required"),
+  balloon_mass_g:       z.coerce.number().min(50).max(3000),
+  payload_mass_g:       z.coerce.number().min(0).max(10000),
+  helium_volume_m3:     z.coerce.number().min(0.1).max(500),
+  parachute_diameter_m: z.coerce.number().min(0.2).max(10),
+  parachute_cd:         z.coerce.number().min(0.3).max(1.5),
+  time_step:            z.coerce.number().min(1).max(300).default(60),
 });
 
 export default function Home() {
@@ -62,19 +92,38 @@ export default function Home() {
 
   const runSim = useRunSimulation();
 
+  const [parachuteType, setParachuteType] = useState("cross");
+
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      latitude: 37.5665,
-      longitude: 126.9780,
-      launch_datetime: format(addHours(new Date(), 1), "yyyy-MM-dd'T'HH:mm"),
-      balloon_mass_g: 1000,
-      payload_mass_g: 500,
-      ascent_rate: 5.0,
-      descent_rate: 6.0,
-      time_step: 60,
+      latitude:             37.5665,
+      longitude:            126.9780,
+      launch_datetime:      format(addHours(new Date(), 1), "yyyy-MM-dd'T'HH:mm"),
+      balloon_mass_g:       1000,
+      payload_mass_g:       500,
+      helium_volume_m3:     4.0,
+      parachute_diameter_m: 1.5,
+      parachute_cd:         0.97,
+      time_step:            60,
     },
   });
+
+  // Live preview of sea-level ascent / descent rates from current form values
+  const watchHelium   = form.watch("helium_volume_m3");
+  const watchBalloon  = form.watch("balloon_mass_g");
+  const watchPayload  = form.watch("payload_mass_g");
+  const watchParaDiam = form.watch("parachute_diameter_m");
+  const watchParaCd   = form.watch("parachute_cd");
+
+  const liveAscentRate  = useMemo(
+    () => previewAscentRate(watchHelium, watchBalloon, watchPayload ?? 0),
+    [watchHelium, watchBalloon, watchPayload]
+  );
+  const liveDescentRate = useMemo(
+    () => previewDescentRate(watchParaDiam, watchParaCd, watchBalloon, watchPayload ?? 0),
+    [watchParaDiam, watchParaCd, watchBalloon, watchPayload]
+  );
 
   const handleRunSimulation = (values: z.infer<typeof formSchema>) => {
     const date = new Date(values.launch_datetime);
@@ -99,6 +148,9 @@ export default function Home() {
   const loadPreset = (presetId: string) => {
     const preset = presets?.find(p => p.id === presetId);
     if (preset) {
+      const cd = preset.config.parachute_cd;
+      const match = PARACHUTE_TYPES.find(t => Math.abs(t.cd - cd) < 0.01);
+      if (match) setParachuteType(match.value);
       form.reset({
         ...preset.config,
         launch_datetime: format(new Date(preset.config.launch_datetime), "yyyy-MM-dd'T'HH:mm")
@@ -225,32 +277,26 @@ export default function Home() {
                     )}
                   />
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField
-                      control={form.control}
-                      name="ascent_rate"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs font-mono text-muted-foreground">ASCENT (m/s)</FormLabel>
-                          <FormControl>
-                            <Input type="number" step="0.1" className="font-mono text-sm h-9 bg-muted/30" {...field} />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="descent_rate"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs font-mono text-muted-foreground">DESCENT (m/s)</FormLabel>
-                          <FormControl>
-                            <Input type="number" step="0.1" className="font-mono text-sm h-9 bg-muted/30" {...field} />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                  </div>
+                  {/* Helium volume with live ascent rate preview */}
+                  <FormField
+                    control={form.control}
+                    name="helium_volume_m3"
+                    render={({ field }) => (
+                      <FormItem>
+                        <div className="flex items-center justify-between">
+                          <FormLabel className="text-xs font-mono text-muted-foreground">HELIUM VOLUME (m³)</FormLabel>
+                          {liveAscentRate !== null && (
+                            <span className={`text-[10px] font-mono font-bold ${liveAscentRate < 1 ? "text-red-400" : "text-cyan-400"}`}>
+                              {liveAscentRate < 0.5 ? "부력 부족" : `~${liveAscentRate.toFixed(1)} m/s 상승`}
+                            </span>
+                          )}
+                        </div>
+                        <FormControl>
+                          <Input type="number" step="0.1" className="font-mono text-sm h-9 bg-muted/30" {...field} />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
 
                   <FormField
                     control={form.control}
@@ -304,6 +350,72 @@ export default function Home() {
                         </FormItem>
                       )}
                     />
+                  </div>
+
+                  {/* ── Parachute ─────────────────────────────────────── */}
+                  <div className="pt-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                      <Wind className="w-3 h-3" /> Parachute
+                    </p>
+                    <div className="space-y-3">
+                      {/* Type selector — auto-fills C_D */}
+                      <div>
+                        <label className="text-xs font-mono text-muted-foreground block mb-1.5">CANOPY TYPE</label>
+                        <Select
+                          value={parachuteType}
+                          onValueChange={(v) => {
+                            setParachuteType(v);
+                            const t = PARACHUTE_TYPES.find(pt => pt.value === v);
+                            if (t) form.setValue("parachute_cd", t.cd);
+                          }}
+                        >
+                          <SelectTrigger className="font-mono text-xs h-9 bg-muted/30 border-border w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PARACHUTE_TYPES.map(t => (
+                              <SelectItem key={t.value} value={t.value} className="font-mono text-xs">
+                                {t.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <FormField
+                          control={form.control}
+                          name="parachute_diameter_m"
+                          render={({ field }) => (
+                            <FormItem>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <FormLabel className="text-xs font-mono text-muted-foreground">DIAMETER (m)</FormLabel>
+                                {liveDescentRate !== null && (
+                                  <span className="text-[10px] font-mono text-orange-400">
+                                    ~{liveDescentRate.toFixed(1)} m/s
+                                  </span>
+                                )}
+                              </div>
+                              <FormControl>
+                                <Input type="number" step="0.1" className="font-mono text-sm h-9 bg-muted/30" {...field} />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name="parachute_cd"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="text-xs font-mono text-muted-foreground">DRAG COEFF C_D</FormLabel>
+                              <FormControl>
+                                <Input type="number" step="0.01" className="font-mono text-sm h-9 bg-muted/30" {...field} />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    </div>
                   </div>
 
                   <Button 
@@ -411,11 +523,21 @@ export default function Home() {
                       Balloon Configuration (Calculated)
                     </div>
                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono">
+                      {/* Burst altitude — most important result */}
                       <div className="flex justify-between col-span-2 border-b border-primary/10 pb-2">
                         <span className="text-muted-foreground">Burst Altitude</span>
                         <span className="font-bold text-primary text-sm">
                           {(result.balloon_config.burst_altitude_m / 1000).toFixed(1)} km
                         </span>
+                      </div>
+                      {/* Calculated rates — replaces the old manual inputs */}
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Ascent Rate</span>
+                        <span className="text-cyan-400">{result.balloon_config.ascent_rate_ms.toFixed(1)} m/s</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Descent (SL)</span>
+                        <span className="text-orange-400">{result.balloon_config.descent_rate_sl_ms.toFixed(1)} m/s</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Fill Ø</span>

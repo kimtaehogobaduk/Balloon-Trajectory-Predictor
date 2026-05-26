@@ -33,10 +33,14 @@ export const runSimulationBodyBalloonMassGMax = 3000;
 export const runSimulationBodyPayloadMassGMin = 0;
 export const runSimulationBodyPayloadMassGMax = 10000;
 
-export const runSimulationBodyAscentRateMin = 0.5;
-export const runSimulationBodyAscentRateMax = 20;
+export const runSimulationBodyHeliumVolumeM3Min = 0.1;
+export const runSimulationBodyHeliumVolumeM3Max = 500;
 
-export const runSimulationBodyDescentRateMax = 30;
+export const runSimulationBodyParachuteDiameterMMin = 0.2;
+export const runSimulationBodyParachuteDiameterMMax = 10;
+
+export const runSimulationBodyParachuteCdMin = 0.3;
+export const runSimulationBodyParachuteCdMax = 1.5;
 
 export const runSimulationBodyTimeStepMax = 300;
 
@@ -48,8 +52,9 @@ export const RunSimulationBody = zod.object({
   "launch_datetime": zod.string().describe('ISO 8601 launch datetime (UTC)'),
   "balloon_mass_g": zod.number().min(runSimulationBodyBalloonMassGMin).max(runSimulationBodyBalloonMassGMax).describe('Empty latex balloon mass in grams (determines burst diameter)'),
   "payload_mass_g": zod.number().min(runSimulationBodyPayloadMassGMin).max(runSimulationBodyPayloadMassGMax).describe('Total payload mass in grams (instruments, camera, hardware)'),
-  "ascent_rate": zod.number().min(runSimulationBodyAscentRateMin).max(runSimulationBodyAscentRateMax).describe('Target balloon ascent rate in m\/s at sea level'),
-  "descent_rate": zod.number().min(1).max(runSimulationBodyDescentRateMax).describe('Parachute descent rate in m\/s at sea level (positive = downward)'),
+  "helium_volume_m3": zod.number().min(runSimulationBodyHeliumVolumeM3Min).max(runSimulationBodyHeliumVolumeM3Max).describe('Volume of helium loaded at sea level (m³). Determines fill size, neck lift, and sea-level ascent rate via force balance.\n'),
+  "parachute_diameter_m": zod.number().min(runSimulationBodyParachuteDiameterMMin).max(runSimulationBodyParachuteDiameterMMax).describe('Parachute canopy diameter in metres'),
+  "parachute_cd": zod.number().min(runSimulationBodyParachuteCdMin).max(runSimulationBodyParachuteCdMax).describe('Parachute drag coefficient. Typical values: hemispheric 0.75, octagonal 0.85, cross\/cruciform 0.97\n'),
   "time_step": zod.number().min(1).max(runSimulationBodyTimeStepMax).optional().describe('Simulation time step in seconds (default 60)')
 })
 
@@ -98,7 +103,9 @@ export const RunSimulationResponse = zod.object({
   "burst_diameter_m": zod.number().describe('Balloon diameter at burst (m)'),
   "burst_altitude_m": zod.number().describe('Calculated theoretical burst altitude (m)'),
   "neck_lift_n": zod.number().describe('Net upward force at sea level in Newtons'),
-  "volume_fill_m3": zod.number().describe('Fill volume at sea level in cubic metres')
+  "volume_fill_m3": zod.number().describe('Fill volume at sea level in cubic metres (equals helium_volume_m3)'),
+  "ascent_rate_ms": zod.number().describe('Calculated sea-level terminal ascent rate (m\/s)'),
+  "descent_rate_sl_ms": zod.number().describe('Calculated sea-level parachute descent rate (m\/s)')
 }),
   "wind_data_fetched_at": zod.string().describe('ISO 8601 datetime when wind data was fetched')
 })
@@ -120,10 +127,14 @@ export const getPresetsResponseConfigBalloonMassGMax = 3000;
 export const getPresetsResponseConfigPayloadMassGMin = 0;
 export const getPresetsResponseConfigPayloadMassGMax = 10000;
 
-export const getPresetsResponseConfigAscentRateMin = 0.5;
-export const getPresetsResponseConfigAscentRateMax = 20;
+export const getPresetsResponseConfigHeliumVolumeM3Min = 0.1;
+export const getPresetsResponseConfigHeliumVolumeM3Max = 500;
 
-export const getPresetsResponseConfigDescentRateMax = 30;
+export const getPresetsResponseConfigParachuteDiameterMMin = 0.2;
+export const getPresetsResponseConfigParachuteDiameterMMax = 10;
+
+export const getPresetsResponseConfigParachuteCdMin = 0.3;
+export const getPresetsResponseConfigParachuteCdMax = 1.5;
 
 export const getPresetsResponseConfigTimeStepMax = 300;
 
@@ -139,8 +150,9 @@ export const GetPresetsResponseItem = zod.object({
   "launch_datetime": zod.string().describe('ISO 8601 launch datetime (UTC)'),
   "balloon_mass_g": zod.number().min(getPresetsResponseConfigBalloonMassGMin).max(getPresetsResponseConfigBalloonMassGMax).describe('Empty latex balloon mass in grams (determines burst diameter)'),
   "payload_mass_g": zod.number().min(getPresetsResponseConfigPayloadMassGMin).max(getPresetsResponseConfigPayloadMassGMax).describe('Total payload mass in grams (instruments, camera, hardware)'),
-  "ascent_rate": zod.number().min(getPresetsResponseConfigAscentRateMin).max(getPresetsResponseConfigAscentRateMax).describe('Target balloon ascent rate in m\/s at sea level'),
-  "descent_rate": zod.number().min(1).max(getPresetsResponseConfigDescentRateMax).describe('Parachute descent rate in m\/s at sea level (positive = downward)'),
+  "helium_volume_m3": zod.number().min(getPresetsResponseConfigHeliumVolumeM3Min).max(getPresetsResponseConfigHeliumVolumeM3Max).describe('Volume of helium loaded at sea level (m³). Determines fill size, neck lift, and sea-level ascent rate via force balance.\n'),
+  "parachute_diameter_m": zod.number().min(getPresetsResponseConfigParachuteDiameterMMin).max(getPresetsResponseConfigParachuteDiameterMMax).describe('Parachute canopy diameter in metres'),
+  "parachute_cd": zod.number().min(getPresetsResponseConfigParachuteCdMin).max(getPresetsResponseConfigParachuteCdMax).describe('Parachute drag coefficient. Typical values: hemispheric 0.75, octagonal 0.85, cross\/cruciform 0.97\n'),
   "time_step": zod.number().min(1).max(getPresetsResponseConfigTimeStepMax).optional().describe('Simulation time step in seconds (default 60)')
 })
 })

@@ -15,6 +15,10 @@ export interface BalloonConfig {
   burst_altitude_m: number;
   /** Net upward force at sea level in Newtons */
   neck_lift_n: number;
-  /** Fill volume at sea level in cubic metres */
+  /** Fill volume at sea level in cubic metres (equals helium_volume_m3) */
   volume_fill_m3: number;
+  /** Calculated sea-level terminal ascent rate (m/s) */
+  ascent_rate_ms: number;
+  /** Calculated sea-level parachute descent rate (m/s) */
+  descent_rate_sl_ms: number;
 }

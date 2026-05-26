@@ -37,17 +37,25 @@ export interface SimulationInput {
      */
   payload_mass_g: number;
   /**
-     * Target balloon ascent rate in m/s at sea level
-     * @minimum 0.5
-     * @maximum 20
+     * Volume of helium loaded at sea level (m³). Determines fill size, neck lift, and sea-level ascent rate via force balance.
+
+     * @minimum 0.1
+     * @maximum 500
      */
-  ascent_rate: number;
+  helium_volume_m3: number;
   /**
-     * Parachute descent rate in m/s at sea level (positive = downward)
-     * @minimum 1
-     * @maximum 30
+     * Parachute canopy diameter in metres
+     * @minimum 0.2
+     * @maximum 10
      */
-  descent_rate: number;
+  parachute_diameter_m: number;
+  /**
+     * Parachute drag coefficient. Typical values: hemispheric 0.75, octagonal 0.85, cross/cruciform 0.97
+
+     * @minimum 0.3
+     * @maximum 1.5
+     */
+  parachute_cd: number;
   /**
      * Simulation time step in seconds (default 60)
      * @minimum 1
@@ -65,8 +73,12 @@ export interface BalloonConfig {
   burst_altitude_m: number;
   /** Net upward force at sea level in Newtons */
   neck_lift_n: number;
-  /** Fill volume at sea level in cubic metres */
+  /** Fill volume at sea level in cubic metres (equals helium_volume_m3) */
   volume_fill_m3: number;
+  /** Calculated sea-level terminal ascent rate (m/s) */
+  ascent_rate_ms: number;
+  /** Calculated sea-level parachute descent rate (m/s) */
+  descent_rate_sl_ms: number;
 }
 
 export interface TrajectoryPoint {
