@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { TrajectoryPoint } from "@workspace/api-client-react";
-import { Play, Pause, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Play, Pause, ChevronLeft } from "lucide-react";
 
 interface BalloonCameraProps {
   trajectory: TrajectoryPoint[];
@@ -14,6 +13,218 @@ interface BalloonCameraProps {
   onClose: () => void;
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Cloud {
+  x: number;       // canvas pixels
+  y: number;
+  speed: number;   // px/sec (horizontal drift)
+  size: number;
+  opacity: number;
+  puffs: { dx: number; dy: number; r: number }[];
+}
+
+interface Bird {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  size: number;
+  wingPhase: number;
+  wingSpeed: number; // rad/sec
+}
+
+interface Airplane {
+  active: boolean;
+  x: number;
+  y: number;
+  dirRight: boolean;
+  speed: number;         // px/sec
+  contrail: { x: number; y: number }[];
+  nextSpawnIn: number;   // seconds until next spawn
+}
+
+// ─── Entity helpers ───────────────────────────────────────────────────────────
+
+function makePuffs(size: number, count: number) {
+  const puffs: { dx: number; dy: number; r: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    puffs.push({
+      dx: (Math.random() - 0.5) * size * 1.9,
+      dy: (Math.random() - 0.5) * size * 0.65,
+      r:  size * (0.28 + Math.random() * 0.44),
+    });
+  }
+  return puffs;
+}
+
+function spawnCloud(w: number, h: number, startX?: number): Cloud {
+  const size = 45 + Math.random() * 90;
+  return {
+    x:       startX ?? Math.random() * w,
+    y:       h * (0.08 + Math.random() * 0.52),
+    speed:   6 + Math.random() * 18,
+    size,
+    opacity: 0.55 + Math.random() * 0.38,
+    puffs:   makePuffs(size, 5 + Math.floor(Math.random() * 5)),
+  };
+}
+
+function spawnBird(w: number, h: number): Bird {
+  return {
+    x: Math.random() * w,
+    y: h * (0.25 + Math.random() * 0.45),
+    vx: (Math.random() < 0.5 ? -1 : 1) * (30 + Math.random() * 55),
+    vy: (Math.random() - 0.5) * 12,
+    size: 7 + Math.random() * 9,
+    wingPhase: Math.random() * Math.PI * 2,
+    wingSpeed: 3.5 + Math.random() * 3.5,
+  };
+}
+
+// ─── Draw helpers ─────────────────────────────────────────────────────────────
+
+function drawCloud(
+  ctx: CanvasRenderingContext2D,
+  cloud: Cloud,
+  horizonY: number,
+  altOpacity: number
+) {
+  const { x, y, puffs, opacity } = cloud;
+  const a = opacity * altOpacity;
+  if (a <= 0.01 || y > horizonY - 10) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  for (const p of puffs) {
+    const px = x + p.dx;
+    const py = y + p.dy;
+    if (py >= horizonY) continue;
+    const grad = ctx.createRadialGradient(px, py, p.r * 0.1, px, py, p.r);
+    grad.addColorStop(0,    `rgba(255,255,255,${a * 0.95})`);
+    grad.addColorStop(0.4,  `rgba(245,249,255,${a * 0.72})`);
+    grad.addColorStop(0.75, `rgba(225,235,255,${a * 0.3})`);
+    grad.addColorStop(1,    `rgba(200,220,255,0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(px, py, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBird(
+  ctx: CanvasRenderingContext2D,
+  bird: Bird,
+  horizonY: number,
+  altitude: number
+) {
+  if (bird.y > horizonY || altitude > 3200) return;
+  const { x, y, size, wingPhase } = bird;
+  const amp = size * 0.55 * Math.sin(wingPhase);
+  ctx.save();
+  ctx.strokeStyle = "rgba(12, 8, 4, 0.85)";
+  ctx.lineWidth = Math.max(1, size * 0.1);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(x - size,       y + amp);
+  ctx.quadraticCurveTo(x - size * 0.48, y - amp * 0.35, x, y);
+  ctx.quadraticCurveTo(x + size * 0.48, y - amp * 0.35, x + size, y + amp);
+  ctx.stroke();
+  // Body dot
+  ctx.fillStyle = "rgba(12, 8, 4, 0.7)";
+  ctx.beginPath();
+  ctx.arc(x, y, size * 0.09, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawAirplane(
+  ctx: CanvasRenderingContext2D,
+  ap: Airplane
+) {
+  const { x, y, dirRight, contrail } = ap;
+
+  // Contrail (fades out behind)
+  if (contrail.length > 1) {
+    for (let i = 1; i < contrail.length; i++) {
+      const t = i / contrail.length;
+      const a = t * 0.45;
+      ctx.strokeStyle = `rgba(240,244,255,${a})`;
+      ctx.lineWidth = 1.8 * t;
+      ctx.beginPath();
+      ctx.moveTo(contrail[i - 1].x, contrail[i - 1].y - 3);
+      ctx.lineTo(contrail[i].x,     contrail[i].y - 3);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(contrail[i - 1].x, contrail[i - 1].y + 3);
+      ctx.lineTo(contrail[i].x,     contrail[i].y + 3);
+      ctx.stroke();
+    }
+  }
+
+  ctx.save();
+  ctx.translate(x, y);
+  if (!dirRight) ctx.scale(-1, 1);
+
+  const fill = "rgba(195,205,218,0.93)";
+  ctx.fillStyle = fill;
+
+  // Fuselage
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 19, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Nose cone
+  ctx.beginPath();
+  ctx.moveTo(17, 0);
+  ctx.lineTo(26, 0.5);
+  ctx.lineTo(17, 3);
+  ctx.closePath();
+  ctx.fill();
+
+  // Main wing (swept)
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(3, 0);
+    ctx.lineTo(-3, side * 17);
+    ctx.lineTo(-7, side * 17);
+    ctx.lineTo(-4, 0);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Horizontal stabilizers
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(-12, 0);
+    ctx.lineTo(-15, side * 7);
+    ctx.lineTo(-17, side * 7);
+    ctx.lineTo(-14, 0);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Vertical tail fin
+  ctx.beginPath();
+  ctx.moveTo(-13, 0);
+  ctx.lineTo(-17, -9);
+  ctx.lineTo(-13, -9);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ─── Noise helper (Perlin-like approximation) ─────────────────────────────────
+
+function noise(t: number, f1: number, f2: number): number {
+  return Math.sin(t * f1) * 0.65 + Math.sin(t * f2 * 1.618) * 0.35;
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 export default function BalloonCamera({
   trajectory,
   animFrame,
@@ -22,264 +233,358 @@ export default function BalloonCamera({
   setIsPlaying,
   playSpeed,
   setPlaySpeed,
-  onClose
+  onClose,
 }: BalloonCameraProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const starsRef = useRef<{ x: number; y: number; s: number }[]>([]);
 
+  // Keep hot props in refs so the render loop never restarts just because they changed
+  const frameRef    = useRef(animFrame);
+  const playingRef  = useRef(isPlaying);
+  const speedRef    = useRef(playSpeed);
+
+  useEffect(() => { frameRef.current   = animFrame; },  [animFrame]);
+  useEffect(() => { playingRef.current = isPlaying; },  [isPlaying]);
+  useEffect(() => { speedRef.current   = playSpeed; },  [playSpeed]);
+
+  // Canvas resize
   useEffect(() => {
-    // Generate stars
-    if (starsRef.current.length === 0) {
-      const stars = [];
-      for (let i = 0; i < 200; i++) {
-        stars.push({
-          x: Math.random(),
-          y: Math.random(),
-          s: Math.random() * 2 + 0.5
-        });
+    const resize = () => {
+      if (canvasRef.current) {
+        canvasRef.current.width  = window.innerWidth;
+        canvasRef.current.height = window.innerHeight;
       }
-      starsRef.current = stars;
-    }
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
   }, []);
 
+  // Main render loop — only restarts when trajectory changes
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !trajectory || trajectory.length === 0) return;
-
+    if (!canvas || !trajectory.length) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let animationId: number;
-    let gridOffset = 0;
+    const W = () => canvas.width;
+    const H = () => canvas.height;
 
-    const render = () => {
-      if (!canvas || !ctx) return;
-      const width = canvas.width;
-      const height = canvas.height;
-      const pt = trajectory[animFrame];
-      
-      ctx.clearRect(0, 0, width, height);
+    // ── Init entities ────────────────────────────────────────────────────────
+    const CLOUD_COUNT = 10;
+    const BIRD_COUNT  = 12;
 
+    const clouds: Cloud[]    = Array.from({ length: CLOUD_COUNT }, () => spawnCloud(W(), H()));
+    const birds:  Bird[]     = Array.from({ length: BIRD_COUNT  }, () => spawnBird(W(), H()));
+    // Stable star positions (seeded)
+    const stars = Array.from({ length: 220 }, (_, i) => ({
+      x: ((i * 1731 + 13) % 997) / 997,
+      y: ((i * 2417 + 7)  % 983) / 983,
+      s: 0.6 + ((i * 311) % 100) / 100 * 1.6,
+    }));
+    const airplane: Airplane = {
+      active: false, x: 0, y: 0, dirRight: true,
+      speed: 0, contrail: [], nextSpawnIn: 8 + Math.random() * 20,
+    };
+
+    let animId: number;
+    let lastTs  = 0;
+    let wallSec = 0;         // real-world seconds elapsed
+    let gridOff = 0;
+
+    const render = (ts: number) => {
+      const dt = Math.min((ts - lastTs) / 1000, 0.08);
+      lastTs = ts;
+      wallSec += dt;
+
+      const fi  = Math.min(frameRef.current, trajectory.length - 1);
+      const pt  = trajectory[fi];
       const alt = pt.altitude;
-      const horizonY = height * 0.55;
+      const w   = W(), h = H();
+      const horizonY  = h * 0.54;
+      const groundOpa = Math.max(0, 1 - alt / 14000);
+      const cloudOpa  = Math.max(0, 1 - alt / 9000);
+      const birdOpa   = alt < 2800 ? Math.max(0, 1 - alt / 2800) : 0;
+      const starOpa   = Math.max(0, (alt - 7500) / 16000);
 
-      // Sky Layer
+      // ── Camera shake ──────────────────────────────────────────────────────
+      const shakeAmp = Math.min(pt.wind_speed * 0.28, 9);
+      const sx = noise(wallSec, 2.3, 7.1) * shakeAmp;
+      const sy = noise(wallSec, 1.7, 5.4) * shakeAmp * 0.55;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.save();
+      ctx.translate(sx, sy);
+
+      // ── Sky gradient ──────────────────────────────────────────────────────
       const skyGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
-      if (alt < 2000) {
-        skyGrad.addColorStop(0, "#0a1628");
-        skyGrad.addColorStop(1, "#1a3a6e");
-      } else if (alt < 12000) {
-        skyGrad.addColorStop(0, "#0f2a5c");
-        skyGrad.addColorStop(1, "#061020");
-      } else if (alt < 30000) {
-        skyGrad.addColorStop(0, "#030a1a");
-        skyGrad.addColorStop(1, "#010308");
-      } else {
-        skyGrad.addColorStop(0, "#010308");
-        skyGrad.addColorStop(1, "#000305");
-      }
+      if      (alt <  2000) { skyGrad.addColorStop(0, "#09152a"); skyGrad.addColorStop(1, "#17376b"); }
+      else if (alt < 10000) { skyGrad.addColorStop(0, "#0d2655"); skyGrad.addColorStop(1, "#05101e"); }
+      else if (alt < 28000) { skyGrad.addColorStop(0, "#020811"); skyGrad.addColorStop(1, "#010306"); }
+      else                  { skyGrad.addColorStop(0, "#010306"); skyGrad.addColorStop(1, "#000204"); }
       ctx.fillStyle = skyGrad;
-      ctx.fillRect(0, 0, width, horizonY);
+      ctx.fillRect(-4, -4, w + 8, horizonY + 4);
 
-      // Stars
-      if (alt > 8000) {
-        const starOpacity = Math.min(1, (alt - 8000) / 17000);
-        ctx.fillStyle = `rgba(255, 255, 255, ${starOpacity})`;
-        starsRef.current.forEach(star => {
+      // ── Stars ─────────────────────────────────────────────────────────────
+      if (starOpa > 0.01) {
+        ctx.fillStyle = `rgba(255,255,255,${starOpa})`;
+        for (const star of stars) {
           ctx.beginPath();
-          ctx.arc(star.x * width, star.y * horizonY, star.s, 0, Math.PI * 2);
+          ctx.arc(star.x * w, star.y * horizonY * 0.95, star.s, 0, Math.PI * 2);
           ctx.fill();
-        });
+        }
       }
 
-      // Ground Layer
-      const groundOpacity = Math.max(0, 1 - alt / 15000);
-      ctx.fillStyle = `rgba(26, 18, 5, ${groundOpacity})`;
-      ctx.fillRect(0, horizonY, width, height - horizonY);
-
-      if (groundOpacity > 0) {
-        // Perspective Grid
-        ctx.strokeStyle = `rgba(150, 100, 50, ${groundOpacity * 0.3})`;
-        ctx.lineWidth = 1;
-        
-        gridOffset = (gridOffset + pt.horizontal_speed * 0.5) % 40;
-        
-        ctx.beginPath();
-        for (let y = horizonY; y < height; y += (y - horizonY) / 10 + 2) {
-          ctx.moveTo(0, y + (gridOffset * ((y - horizonY)/height)));
-          ctx.lineTo(width, y + (gridOffset * ((y - horizonY)/height)));
+      // ── Clouds ────────────────────────────────────────────────────────────
+      if (cloudOpa > 0.01) {
+        for (const cloud of clouds) {
+          cloud.x += cloud.speed * dt * (1 + pt.wind_speed * 0.04);
+          if (cloud.x - cloud.size * 1.8 > w) {
+            Object.assign(cloud, spawnCloud(w, h, -cloud.size * 2));
+          }
+          drawCloud(ctx, cloud, horizonY, cloudOpa);
         }
-        
-        const centerX = width / 2;
-        for (let x = -width; x < width * 2; x += 100) {
-          ctx.moveTo(centerX, horizonY);
-          ctx.lineTo(x, height);
+      }
+
+      // ── Ground ────────────────────────────────────────────────────────────
+      if (groundOpa > 0.01) {
+        const gGrad = ctx.createLinearGradient(0, horizonY, 0, h);
+        gGrad.addColorStop(0, `rgba(22,15,4,${groundOpa})`);
+        gGrad.addColorStop(1, `rgba(10,7,2,${groundOpa})`);
+        ctx.fillStyle = gGrad;
+        ctx.fillRect(-4, horizonY, w + 8, h - horizonY + 4);
+
+        // Perspective grid
+        gridOff = (gridOff + pt.horizontal_speed * 0.55 * dt * 60) % 45;
+        ctx.strokeStyle = `rgba(130, 90, 40, ${groundOpa * 0.28})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let gy = horizonY; gy < h + 46; gy += (gy - horizonY) / 12 + 2.2) {
+          const off = gridOff * ((gy - horizonY) / (h - horizonY + 1));
+          ctx.moveTo(-4,    gy + off);
+          ctx.lineTo(w + 4, gy + off);
+        }
+        const cx2 = w / 2 + sx * -0.8;
+        for (let gx = -w * 0.5; gx < w * 1.5; gx += 55) {
+          ctx.moveTo(cx2, horizonY);
+          ctx.lineTo(gx, h + 4);
         }
         ctx.stroke();
       }
 
-      // Horizon Line
-      const vx = pt.horizontal_speed * Math.cos(pt.bearing * Math.PI / 180);
-      const vy = pt.horizontal_speed * Math.sin(pt.bearing * Math.PI / 180);
-      const tiltAngle = Math.atan2(vx, vy) * 0.05;
-      
+      // ── Horizon line (tilts with wind vector) ──────────────────────────────
+      const bearRad   = (pt.bearing * Math.PI) / 180;
+      const tilt      = Math.atan2(
+        pt.wind_speed * Math.sin(bearRad),
+        pt.wind_speed * Math.cos(bearRad)
+      ) * 0.06;
       ctx.save();
-      ctx.translate(width/2, horizonY);
-      ctx.rotate(tiltAngle);
-      ctx.strokeStyle = `rgba(200, 220, 255, ${Math.max(0.2, groundOpacity)})`;
-      ctx.lineWidth = 2;
+      ctx.translate(w / 2, horizonY);
+      ctx.rotate(tilt);
+      ctx.strokeStyle = `rgba(190, 215, 255, ${Math.max(0.18, groundOpa * 0.85)})`;
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(-width, 0);
-      ctx.lineTo(width, 0);
+      ctx.moveTo(-w, 0);
+      ctx.lineTo(w,  0);
       ctx.stroke();
       ctx.restore();
 
-      animationId = requestAnimationFrame(render);
-    };
+      // ── Birds ─────────────────────────────────────────────────────────────
+      if (birdOpa > 0.01) {
+        for (const bird of birds) {
+          bird.x         += bird.vx * dt;
+          bird.y         += bird.vy * dt;
+          bird.wingPhase += bird.wingSpeed * dt;
+          // slight turbulence drift
+          bird.vy += noise(wallSec + bird.wingPhase, 1.2, 3.7) * 6 * dt;
+          bird.vy  = Math.max(-18, Math.min(18, bird.vy));
+          // wrap
+          if (bird.x < -bird.size * 2)  bird.x = w + bird.size;
+          if (bird.x > w + bird.size * 2) bird.x = -bird.size;
+          if (bird.y < h * 0.15) bird.vy = Math.abs(bird.vy);
+          if (bird.y > horizonY - 20)    bird.vy = -Math.abs(bird.vy);
 
-    render();
-
-    return () => {
-      cancelAnimationFrame(animationId);
-    };
-  }, [trajectory, animFrame]);
-
-  // Handle resize
-  useEffect(() => {
-    const handleResize = () => {
-      if (canvasRef.current) {
-        canvasRef.current.width = window.innerWidth;
-        canvasRef.current.height = window.innerHeight;
+          ctx.globalAlpha = birdOpa;
+          drawBird(ctx, bird, horizonY, alt);
+          ctx.globalAlpha = 1;
+        }
       }
-    };
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
 
-  const pt = trajectory[animFrame];
+      // ── Airplane ──────────────────────────────────────────────────────────
+      airplane.nextSpawnIn -= dt;
+      const planeAlt = alt;
+      if (!airplane.active && airplane.nextSpawnIn <= 0 && planeAlt > 3000 && planeAlt < 13000) {
+        airplane.active   = true;
+        airplane.dirRight = Math.random() < 0.5;
+        airplane.x        = airplane.dirRight ? -40 : w + 40;
+        airplane.y        = horizonY * (0.1 + Math.random() * 0.55);
+        airplane.speed    = 280 + Math.random() * 160;
+        airplane.contrail = [];
+        airplane.nextSpawnIn = 15 + Math.random() * 35;
+      }
+      if (airplane.active) {
+        airplane.x += (airplane.dirRight ? 1 : -1) * airplane.speed * dt;
+        airplane.contrail.unshift({ x: airplane.x, y: airplane.y });
+        if (airplane.contrail.length > 80) airplane.contrail.pop();
+        drawAirplane(ctx, airplane);
+        if (airplane.x < -80 || airplane.x > w + 80) {
+          airplane.active = false;
+        }
+      }
+
+      // ── Scanlines ──────────────────────────────────────────────────────────
+      // Drawn before restoring shake so they stay fixed on screen
+      ctx.restore(); // end shake transform
+
+      ctx.save();
+      for (let y2 = 0; y2 < h; y2 += 3) {
+        ctx.fillStyle = "rgba(0,0,0,0.08)";
+        ctx.fillRect(0, y2, w, 1);
+      }
+      ctx.restore();
+
+      animId = requestAnimationFrame(render);
+    };
+
+    animId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(animId);
+  }, [trajectory]); // Only trajectory restarts the loop
+
+  const pt = trajectory[Math.min(animFrame, trajectory.length - 1)];
   if (!pt) return null;
 
-  const launchTime = new Date(trajectory[0].time).getTime();
-  const currentTime = new Date(pt.time).getTime();
-  const tPlus = Math.floor((currentTime - launchTime) / 1000);
-  const hours = String(Math.floor(tPlus / 3600)).padStart(2, "0");
-  const mins = String(Math.floor((tPlus % 3600) / 60)).padStart(2, "0");
-  const secs = String(tPlus % 60).padStart(2, "0");
-
-  const progress = (animFrame / (trajectory.length - 1)) * 100;
+  const launchMs  = new Date(trajectory[0].time).getTime();
+  const tPlus     = Math.floor((new Date(pt.time).getTime() - launchMs) / 1000);
+  const hh = String(Math.floor(tPlus / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((tPlus % 3600) / 60)).padStart(2, "0");
+  const ss = String(tPlus % 60).padStart(2, "0");
 
   return (
-    <div className="fixed inset-0 z-50 bg-black text-white font-mono flex flex-col overflow-hidden">
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover" />
-      
-      {/* Scanlines */}
-      <div className="absolute inset-0 pointer-events-none" style={{
-        background: "repeating-linear-gradient(0deg, rgba(0,0,0,0.15), rgba(0,0,0,0.15) 1px, transparent 1px, transparent 2px)"
-      }} />
+    <div className="fixed inset-0 z-50 bg-black text-white font-mono overflow-hidden select-none">
+      <canvas ref={canvasRef} className="absolute inset-0" />
 
-      {/* HUD Content */}
-      <div className="relative z-10 p-6 flex flex-col h-full pointer-events-none">
-        
-        {/* Top Header */}
-        <div className="flex justify-between items-start">
-          <div className="pointer-events-auto flex items-center gap-2">
-            <Button variant="outline" size="icon" onClick={() => setIsPlaying(!isPlaying)} className="bg-black/50 border-white/20 hover:bg-white/20 text-white">
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-            </Button>
-            <div className="flex bg-black/50 rounded border border-white/20 overflow-hidden text-xs">
+      {/* HUD layer */}
+      <div className="relative z-10 flex flex-col h-full p-5">
+
+        {/* Top bar */}
+        <div className="flex items-start justify-between">
+
+          {/* Back to map — prominent */}
+          <button
+            data-testid="button-back-to-map"
+            onClick={onClose}
+            className="flex items-center gap-1.5 px-3 py-2 rounded bg-black/60 border border-white/25 text-xs font-bold tracking-wider hover:bg-white/15 transition-colors pointer-events-auto"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            BACK TO MAP
+          </button>
+
+          {/* Timer + phase */}
+          <div className="flex flex-col items-center gap-1 pointer-events-none">
+            <span className="text-xl font-bold tracking-[0.15em] drop-shadow">T+ {hh}:{mm}:{ss}</span>
+            <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
+              pt.phase === "ascent"
+                ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/50"
+                : "bg-orange-500/20 text-orange-300 border-orange-500/50"
+            }`}>
+              {pt.phase.toUpperCase()}
+            </span>
+          </div>
+
+          {/* Playback controls */}
+          <div className="flex items-center gap-2 pointer-events-auto">
+            <div className="flex bg-black/60 rounded border border-white/20 overflow-hidden text-[11px]">
               {[1, 5, 10, 20].map(s => (
-                <button 
-                  key={s} 
+                <button
+                  key={s}
+                  data-testid={`button-speed-${s}x`}
                   onClick={() => setPlaySpeed(s)}
-                  className={`px-2 py-1.5 ${playSpeed === s ? "bg-white text-black font-bold" : "text-white/70 hover:bg-white/10"}`}
+                  className={`px-2 py-1.5 transition-colors ${playSpeed === s ? "bg-white/90 text-black font-bold" : "text-white/65 hover:bg-white/12"}`}
                 >
                   {s}x
                 </button>
               ))}
             </div>
-          </div>
-
-          <div className="text-center flex flex-col items-center">
-            <div className="text-xl font-bold tracking-widest text-shadow-sm">T+ {hours}:{mins}:{secs}</div>
-            <div className={`text-xs px-2 py-0.5 rounded font-bold mt-1 ${pt.phase === "ascent" ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/50" : "bg-orange-500/20 text-orange-400 border border-orange-500/50"}`}>
-              {pt.phase.toUpperCase()}
-            </div>
-          </div>
-
-          <Button variant="ghost" size="icon" onClick={onClose} className="pointer-events-auto text-white/70 hover:text-white hover:bg-white/10">
-            <X className="w-6 h-6" />
-          </Button>
-        </div>
-
-        {/* Reticle */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-50">
-          <div className="w-64 h-64 border border-white/20 rounded-full flex items-center justify-center relative">
-            <div className="w-2 h-2 border border-white rounded-full"></div>
-            <div className="absolute w-full h-px bg-white/20"></div>
-            <div className="absolute w-px h-full bg-white/20"></div>
+            <button
+              data-testid="button-play-pause"
+              onClick={() => setIsPlaying(!isPlaying)}
+              className="w-8 h-8 flex items-center justify-center rounded bg-black/60 border border-white/25 hover:bg-white/15 transition-colors"
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+            </button>
           </div>
         </div>
 
-        {/* HUD Data */}
-        <div className="flex-1 flex items-center justify-between mt-10">
-          
-          <div className="flex flex-col gap-4 text-sm text-shadow-sm">
-            <div>
-              <div className="text-white/50 text-[10px]">ALTITUDE</div>
-              <div className="text-3xl font-bold">{pt.altitude.toFixed(0)} <span className="text-lg">m</span></div>
-            </div>
-            <div>
-              <div className="text-white/50 text-[10px]">VERTICAL SPEED</div>
-              <div className={`text-xl ${pt.vertical_speed >= 0 ? "text-green-400" : "text-red-400"}`}>
-                {pt.vertical_speed > 0 ? "+" : ""}{pt.vertical_speed.toFixed(1)} m/s
-              </div>
-            </div>
-            <div>
-              <div className="text-white/50 text-[10px]">HORIZONTAL SPEED</div>
-              <div className="text-xl text-cyan-400">{pt.horizontal_speed.toFixed(1)} m/s</div>
-            </div>
-            <div>
-              <div className="text-white/50 text-[10px]">TOTAL SPEED</div>
-              <div className="text-xl">{pt.total_speed.toFixed(1)} m/s</div>
-            </div>
+        {/* Centre reticle */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="relative w-56 h-56 opacity-30">
+            <div className="absolute inset-0 rounded-full border border-white/40" />
+            <div className="absolute top-1/2 left-0 right-0 h-px bg-white/50 -translate-y-px" />
+            <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/50 -translate-x-px" />
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full border border-white/80" />
           </div>
-
-          <div className="flex flex-col gap-4 text-sm text-shadow-sm text-right">
-            <div>
-              <div className="text-white/50 text-[10px]">WIND</div>
-              <div className="text-xl text-yellow-400">{pt.wind_speed.toFixed(1)} m/s</div>
-              <div className="text-yellow-400/70">@ {pt.wind_direction.toFixed(0)}°</div>
-            </div>
-            <div>
-              <div className="text-white/50 text-[10px]">PRESSURE</div>
-              <div className="text-xl text-white/80">{pt.pressure_hpa.toFixed(1)} hPa</div>
-            </div>
-            <div>
-              <div className="text-white/50 text-[10px]">BEARING</div>
-              <div className="text-xl">{pt.bearing.toFixed(0)}°</div>
-            </div>
-          </div>
-
         </div>
 
-        {/* Scrubber / Bottom Controls */}
-        <div className="mt-auto pointer-events-auto">
-          <div className="flex items-center gap-4 bg-black/40 p-2 rounded backdrop-blur border border-white/10">
-            <span className="text-xs text-white/50">0%</span>
-            <input 
-              type="range" 
-              min="0" 
-              max={trajectory.length - 1} 
+        {/* Left HUD */}
+        <div className="mt-auto mb-16 flex flex-col gap-3 pointer-events-none drop-shadow-lg">
+          <HudValue label="ALTITUDE"  value={`${pt.altitude.toLocaleString()} m`} size="lg" />
+          <HudValue label="V.SPEED"   value={`${pt.vertical_speed > 0 ? "+" : ""}${pt.vertical_speed.toFixed(1)} m/s`}
+                    color={pt.vertical_speed >= 0 ? "text-green-400" : "text-red-400"} />
+          <HudValue label="H.SPEED"   value={`${pt.horizontal_speed.toFixed(1)} m/s`} color="text-cyan-400" />
+          <HudValue label="TOTAL"     value={`${pt.total_speed.toFixed(1)} m/s`} />
+        </div>
+
+        {/* Right HUD */}
+        <div className="absolute bottom-20 right-5 flex flex-col gap-3 items-end pointer-events-none drop-shadow-lg">
+          <HudValue label="WIND"     value={`${pt.wind_speed.toFixed(1)} m/s`} color="text-yellow-300" align="right" />
+          <HudValue label="DIR"      value={`${pt.wind_direction}°`} color="text-yellow-300/80" align="right" />
+          <HudValue label="PRESSURE" value={`${pt.pressure_hpa.toFixed(0)} hPa`} color="text-white/70" align="right" />
+          <HudValue label="BEARING"  value={`${pt.bearing}°`} align="right" />
+        </div>
+
+        {/* Bottom scrubber */}
+        <div className="pointer-events-auto mt-auto">
+          <div className="flex items-center gap-3 px-3 py-2 bg-black/50 rounded border border-white/15 backdrop-blur">
+            <span className="text-[10px] text-white/45 w-6 shrink-0">0%</span>
+            <input
+              data-testid="input-scrubber"
+              type="range"
+              min="0"
+              max={trajectory.length - 1}
               value={animFrame}
-              onChange={(e) => setAnimFrame(parseInt(e.target.value))}
-              className="w-full flex-1 accent-white" 
+              onChange={e => setAnimFrame(Number(e.target.value))}
+              className="flex-1 accent-white h-1 cursor-pointer"
             />
-            <span className="text-xs text-white/50">100%</span>
+            <span className="text-[10px] text-white/45 w-8 shrink-0 text-right">100%</span>
+          </div>
+
+          {/* Progress bar */}
+          <div className="mt-1.5 h-px bg-white/10 rounded overflow-hidden">
+            <div
+              className="h-full bg-white/40 transition-none"
+              style={{ width: `${(animFrame / (trajectory.length - 1)) * 100}%` }}
+            />
           </div>
         </div>
-
       </div>
+    </div>
+  );
+}
+
+function HudValue({
+  label, value, color = "text-white", size = "base", align = "left",
+}: {
+  label: string;
+  value: string;
+  color?: string;
+  size?: "base" | "lg";
+  align?: "left" | "right";
+}) {
+  return (
+    <div className={`flex flex-col ${align === "right" ? "items-end" : "items-start"}`}>
+      <span className="text-[9px] text-white/40 tracking-widest">{label}</span>
+      <span className={`font-bold leading-tight ${color} ${size === "lg" ? "text-3xl" : "text-lg"}`}>
+        {value}
+      </span>
     </div>
   );
 }
