@@ -6,7 +6,7 @@ import { format, addHours } from "date-fns";
 import {
   Map as MapIcon, Crosshair, Wind, Navigation, Activity, Clock,
   Layers, Rocket, Settings2, Play, Pause, Video, Target, MapPin,
-  ChevronRight, CheckCircle2, AlertCircle, ArrowRight, Zap
+  ChevronRight, CheckCircle2, AlertCircle, ArrowRight, Zap, Globe
 } from "lucide-react";
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -18,6 +18,7 @@ import type { SimulationInput, SimulationResult, FlightCase, PlanResult, Recomme
 
 import { BalloonMap } from "@/components/Map";
 import BalloonCamera from "@/components/BalloonCamera";
+import Globe3D from "@/components/Globe3D";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -108,6 +109,7 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playSpeed, setPlaySpeed] = useState(1);
   const [videoViewOpen, setVideoViewOpen] = useState(false);
+  const [globeViewOpen, setGlobeViewOpen] = useState(false);
 
   // ── Planning mode state ──────────────────────────────────────────────────
   const [planResult, setPlanResult] = useState<PlanResult | null>(null);
@@ -1135,14 +1137,24 @@ export default function Home() {
         {/* Map Header Overlay */}
         <div className="absolute top-4 right-4 z-[400] flex gap-2">
           {mode === "simulate" && result && (
-            <Button 
-              variant="secondary" 
-              className="bg-background/90 backdrop-blur shadow-lg border-border font-mono font-bold text-xs flex items-center gap-2"
-              onClick={() => setVideoViewOpen(true)}
-            >
-              <Video className="w-4 h-4" />
-              VIDEO VIEW
-            </Button>
+            <>
+              <Button
+                variant="secondary"
+                className="bg-background/90 backdrop-blur shadow-lg border-border font-mono font-bold text-xs flex items-center gap-2"
+                onClick={() => setGlobeViewOpen(true)}
+              >
+                <Globe className="w-4 h-4 text-cyan-400" />
+                3D VIEW
+              </Button>
+              <Button 
+                variant="secondary" 
+                className="bg-background/90 backdrop-blur shadow-lg border-border font-mono font-bold text-xs flex items-center gap-2"
+                onClick={() => setVideoViewOpen(true)}
+              >
+                <Video className="w-4 h-4" />
+                VIDEO VIEW
+              </Button>
+            </>
           )}
         </div>
 
@@ -1197,6 +1209,14 @@ export default function Home() {
           playSpeed={playSpeed}
           setPlaySpeed={setPlaySpeed}
           onClose={() => setVideoViewOpen(false)}
+        />
+      )}
+
+      {globeViewOpen && result && mode === "simulate" && (
+        <Globe3D
+          trajectory={result.trajectory}
+          animFrame={animFrame}
+          onClose={() => setGlobeViewOpen(false)}
         />
       )}
     </div>
