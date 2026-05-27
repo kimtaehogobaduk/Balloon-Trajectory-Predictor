@@ -1,17 +1,12 @@
 import { Router } from "express";
 import { RunSimulationBody } from "@workspace/api-zod";
-import { runBalloonSimulation } from "../lib/balloonSimulator";
-import type { SimulationInput } from "../lib/balloonSimulator";
+import { runBalloonSimulation, planFlight } from "../lib/balloonSimulator";
+import type { SimulationInput, PlanInput } from "../lib/balloonSimulator";
+import * as z from "zod";
 
 const router = Router();
 
 // ─── Presets ──────────────────────────────────────────────────────────────────
-// Helium volumes chosen to give physically plausible ascent rates:
-//   1000g balloon + 500g payload + 4m³ He  → ~5.5 m/s ascent, burst ~33km
-//   2000g balloon + 300g payload + 3.5m³ He → ~4.1 m/s ascent, burst ~38km
-//   600g  balloon + 400g payload + 6m³ He  → ~6.7 m/s ascent, burst ~26km
-//   1500g balloon + 300g payload + 2m³ He  → ~2.3 m/s ascent, burst ~38km
-// Cross parachute C_D = 0.97
 
 const PRESETS = [
   {
@@ -80,6 +75,17 @@ const PRESETS = [
   },
 ];
 
+// ─── Plan input schema ────────────────────────────────────────────────────────
+
+const PlanBody = z.object({
+  launch_lat:      z.number().min(-90).max(90),
+  launch_lng:      z.number().min(-180).max(180),
+  target_lat:      z.number().min(-90).max(90),
+  target_lng:      z.number().min(-180).max(180),
+  payload_mass_g:  z.number().min(0).max(10000),
+  launch_datetime: z.string().min(1),
+});
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 router.get("/presets", (_req, res) => {
@@ -117,6 +123,36 @@ router.post("/simulate", async (req, res) => {
       res.status(400).json({ error: message });
     } else {
       res.status(500).json({ error: `시뮬레이션 오류: ${message}` });
+    }
+  }
+});
+
+router.post("/plan", async (req, res) => {
+  const parsed = PlanBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const input: PlanInput = {
+    launch_lat:      parsed.data.launch_lat,
+    launch_lng:      parsed.data.launch_lng,
+    target_lat:      parsed.data.target_lat,
+    target_lng:      parsed.data.target_lng,
+    payload_mass_g:  parsed.data.payload_mass_g,
+    launch_datetime: parsed.data.launch_datetime,
+  };
+
+  try {
+    const result = await planFlight(input);
+    res.json(result);
+  } catch (err) {
+    req.log.error({ err }, "Planning failed");
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("Open-Meteo")) {
+      res.status(502).json({ error: `바람 데이터 수신 실패: ${message}` });
+    } else {
+      res.status(500).json({ error: `경로 계획 오류: ${message}` });
     }
   }
 });

@@ -49,7 +49,7 @@ function altitudeToPressure(h: number): number {
 
 // ─── Wind interpolation ───────────────────────────────────────────────────────
 
-type WindCache = Record<number, { times: number[]; vx: number[]; vy: number[] }>;
+export type WindCache = Record<number, { times: number[]; vx: number[]; vy: number[] }>;
 
 /** Wind vector components at a specific pressure level + time (temporal linear interpolation) */
 function getWindVector(
@@ -152,11 +152,6 @@ export interface BalloonConfig {
 
 /**
  * Derives all balloon configuration values from physical inputs.
- *
- * - Fill radius comes directly from helium_volume_m3 (no Newton-Raphson needed).
- * - Ascent rate at sea level is the terminal velocity of the force balance.
- * - Burst altitude is binary-searched where V(h) = V_burst.
- * - Descent rate at sea level uses parachute drag physics.
  */
 export function calculateBalloonConfig(
   balloonMassG:      number,
@@ -178,7 +173,7 @@ export function calculateBalloonConfig(
 
   // ── Neck lift (net upward force at sea level) ─────────────────────────────
   const rho0      = P0 / (R * T0); // ≈ 1.225 kg/m³
-  const rho_He0   = P0 / (RHO_HE_SL > 0 ? (2077 * T0) : 1); // use formula consistently
+  const rho_He0   = P0 / (RHO_HE_SL > 0 ? (2077 * T0) : 1);
   const lift_coeff_sl = rho0 - (P0 / (2077 * T0));
   const gross_lift_N  = lift_coeff_sl * heliumVolumeM3 * G;
   const neck_lift_N   = gross_lift_N - m_total * G;
@@ -227,16 +222,6 @@ const RHO_0 = P0 / (R * T0); // ≈ 1.225 kg/m³
 
 const R_HE = 2077; // J/(kg·K) – helium specific gas constant
 
-/**
- * Terminal ascent rate at altitude h given sea-level helium fill volume.
- *
- * At each altitude h the balloon volume expands:
- *   V(h) = V_fill × (P₀/P(h)) × (T(h)/T₀)   [ideal gas]
- *
- * Net force balance → terminal velocity:
- *   (ρ_air − ρ_He) × V × g − m_total × g = ½ C_D ρ_air π r² v²
- *   v_t = √( F_net / (½ C_D ρ_air π r²) )
- */
 function ascentRatePhysics(h: number, V_fill_sl: number, m_total: number): number {
   const P       = altitudeToPressure(Math.max(h, 0));
   const T       = isaTemperature(Math.max(h, 0));
@@ -248,20 +233,12 @@ function ascentRatePhysics(h: number, V_fill_sl: number, m_total: number): numbe
   const r   = Math.cbrt(3 * V / (4 * Math.PI));
 
   const net_force = (rho_air - rho_He) * V * G - m_total * G;
-  if (net_force <= 0) return 0.3; // neutral / negative buoyancy
+  if (net_force <= 0) return 0.3;
 
   const drag_denom = 0.5 * C_D_BALLOON * rho_air * Math.PI * r * r;
   return Math.min(50, Math.sqrt(net_force / drag_denom));
 }
 
-/**
- * Parachute terminal descent speed (magnitude) at altitude h.
- *
- *   ½ C_D ρ_air(h) A v² = m_total g
- *   v(h) = √( 2 m g / (C_D ρ_air(h) A) )
- *
- * Capped at 150 m/s to avoid hypersonic regime where this model breaks down.
- */
 function descentRatePhysics(h: number, parachuteDiamM: number, parachuteCd: number, m_total: number): number {
   const P       = altitudeToPressure(Math.max(h, 0));
   const T       = isaTemperature(Math.max(h, 0));
@@ -270,13 +247,6 @@ function descentRatePhysics(h: number, parachuteDiamM: number, parachuteCd: numb
   return Math.min(150, Math.sqrt(2 * m_total * G / (parachuteCd * rho_air * A_chute)));
 }
 
-/**
- * Turbulence sigma (m/s) by atmospheric layer:
- *   0–3 km    : moderate convective turbulence
- *   3–12 km   : stronger, tropopause / jet-stream region
- *   12–20 km  : stratosphere lower, mostly smooth
- *   >20 km    : very calm
- */
 function turbulenceSigma(h: number): number {
   if (h < 3000)  return 0.42;
   if (h < 12000) return 0.80;
@@ -348,7 +318,6 @@ export async function fetchWindCache(lat: number, lon: number): Promise<WindCach
     const vy: number[] = [];
     for (let i = 0; i < speeds.length; i++) {
       const rad = (dirs[i] * Math.PI) / 180;
-      // Met convention: direction = FROM; decompose to eastward/northward
       vx.push(-speeds[i] * Math.sin(rad));
       vy.push(-speeds[i] * Math.cos(rad));
     }
@@ -406,9 +375,14 @@ export interface SimulationInput {
   time_step?:          number;
 }
 
-// ─── Main simulation ──────────────────────────────────────────────────────────
+// ─── Core simulation (reusable with pre-fetched wind cache) ───────────────────
 
-export async function runBalloonSimulation(input: SimulationInput): Promise<SimulationResult> {
+export function runSimulationCore(
+  input: SimulationInput,
+  windCache: WindCache,
+  windFetchedAt: string,
+  deterministicSeed?: number
+): SimulationResult {
   const {
     latitude, longitude, launch_datetime,
     balloon_mass_g, payload_mass_g,
@@ -416,15 +390,13 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
     time_step = 60,
   } = input;
 
-  const m_total = (balloon_mass_g + payload_mass_g) / 1000; // kg
+  const m_total = (balloon_mass_g + payload_mass_g) / 1000;
 
-  // ── Derive all balloon parameters from physical inputs ──────────────────────
   const balloonConfig  = calculateBalloonConfig(
     balloon_mass_g, payload_mass_g, helium_volume_m3, parachute_diameter_m, parachute_cd
   );
   const burst_altitude = balloonConfig.burst_altitude_m;
 
-  // ── Guard: minimum lift check ───────────────────────────────────────────────
   if (balloonConfig.ascent_rate_ms < 0.3) {
     throw new Error(
       `헬륨 부력 부족: 현재 ${helium_volume_m3}m³ 헬륨으로는 ` +
@@ -432,9 +404,6 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
       `들어올리기 어렵습니다. 헬륨량을 늘려주세요.`
     );
   }
-
-  const windFetchedAt = new Date().toISOString();
-  const windCache     = await fetchWindCache(latitude, longitude);
 
   const trajectory: TrajectoryPoint[] = [];
   let lat = latitude, lon = longitude, alt = 0;
@@ -447,10 +416,15 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
   const launchMs = new Date(launch_datetime).getTime();
   const MAX_STEPS = 100000;
 
-  // Ornstein-Uhlenbeck turbulent vertical velocity (m/s)
-  // Mean-reversion coefficient θ chosen so correlation time ≈ 5 × time_step
+  // Use a simple deterministic pseudo-random for planning (reproducible results)
+  let rngState = deterministicSeed ?? Math.random() * 100000;
+  const rng = () => {
+    rngState = (rngState * 1664525 + 1013904223) % 4294967296;
+    return rngState / 4294967296;
+  };
+
   let turbVz = 0;
-  const turbTheta = 1 - Math.exp(-1 / 5); // ≈ 0.18 for 5-step correlation
+  const turbTheta = 1 - Math.exp(-1 / 5);
 
   for (let step = 0; step < MAX_STEPS; step++) {
     const tMs         = launchMs + elapsedSec * 1000;
@@ -461,24 +435,18 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
     const windSpeedMs = Math.sqrt(vx * vx + vy * vy);
     const windDirDeg  = ((Math.atan2(-vx, -vy) * 180) / Math.PI + 360) % 360;
 
-    // ── Turbulence: Ornstein-Uhlenbeck step ──────────────────────────────────
-    // dV = −θ·V·dt + σ·√(2θ)·dW   (discrete: V ← V·(1−θ) + noise)
     const sigma = turbulenceSigma(alt);
-    turbVz = turbVz * (1 - turbTheta) + (Math.random() - 0.5) * sigma * Math.sqrt(2 * turbTheta) * 3.5;
-    turbVz = Math.max(-3, Math.min(3, turbVz)); // hard clamp
+    turbVz = turbVz * (1 - turbTheta) + (rng() - 0.5) * sigma * Math.sqrt(2 * turbTheta) * 3.5;
+    turbVz = Math.max(-3, Math.min(3, turbVz));
 
-    // ── Vertical speed: full per-step balloon/parachute physics ──────────────
     let vertSpeedMs: number;
     if (phase === "ascent") {
-      // Full force balance per step — accounts for balloon expansion & density change
       const physRate = ascentRatePhysics(alt, helium_volume_m3, m_total);
-      // Near burst: overinflation adds drag (latex stretch resistance)
       const nearBurstFactor = alt > burst_altitude - 3000
         ? 1 - 0.35 * ((alt - (burst_altitude - 3000)) / 3000)
         : 1;
       vertSpeedMs = Math.max(0.3, physRate * nearBurstFactor + turbVz);
     } else {
-      // Parachute: terminal velocity = √(2mg / (C_D ρ(h) A)) — fast at altitude
       const physRate = descentRatePhysics(alt, parachute_diameter_m, parachute_cd, m_total);
       vertSpeedMs = -(Math.max(0.5, physRate + turbVz));
     }
@@ -515,7 +483,6 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
 
     [lat, lon] = updatePosition(lat, lon, vx, vy, time_step);
 
-    // ── Altitude update ───────────────────────────────────────────────────────
     alt += vertSpeedMs * time_step;
 
     if (phase === "ascent") {
@@ -525,7 +492,6 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
         phase = "descent";
       }
     } else if (alt <= 0) {
-      // Final landing point snapshot
       const landTMs = tMs + time_step * 1000;
       const [lx, ly] = getInterpolatedWind(windCache, P0 / 100, landTMs);
       const landWindSpeed = Math.sqrt(lx * lx + ly * ly);
@@ -565,4 +531,175 @@ export async function runBalloonSimulation(input: SimulationInput): Promise<Simu
   };
 
   return { trajectory, landing, stats, balloon_config: balloonConfig, wind_data_fetched_at: windFetchedAt };
+}
+
+// ─── Main simulation ──────────────────────────────────────────────────────────
+
+export async function runBalloonSimulation(input: SimulationInput): Promise<SimulationResult> {
+  const { latitude, longitude, balloon_mass_g, payload_mass_g, helium_volume_m3, parachute_diameter_m, parachute_cd } = input;
+
+  // Quick lift check before fetching wind
+  const m_total = (balloon_mass_g + payload_mass_g) / 1000;
+  const quickConfig = calculateBalloonConfig(balloon_mass_g, payload_mass_g, helium_volume_m3, parachute_diameter_m, parachute_cd);
+  if (quickConfig.ascent_rate_ms < 0.3) {
+    throw new Error(
+      `헬륨 부력 부족: 현재 ${helium_volume_m3}m³ 헬륨으로는 ` +
+      `${balloon_mass_g}g 풍선 + ${payload_mass_g}g 탑재물을 ` +
+      `들어올리기 어렵습니다. 헬륨량을 늘려주세요.`
+    );
+  }
+
+  const windFetchedAt = new Date().toISOString();
+  const windCache     = await fetchWindCache(latitude, longitude);
+
+  return runSimulationCore(input, windCache, windFetchedAt);
+}
+
+// ─── Flight Planning (Reverse Optimizer) ─────────────────────────────────────
+
+export interface FlightCase {
+  case_number: number;
+  label: string;
+  description: string;
+  strategy: string;
+  balloon_mass_g: number;
+  helium_volume_m3: number;
+  parachute_type: string;
+  parachute_diameter_m: number;
+  parachute_cd: number;
+  distance_to_target_km: number;
+  simulation: SimulationResult;
+}
+
+export interface PlanInput {
+  launch_lat: number;
+  launch_lng: number;
+  target_lat: number;
+  target_lng: number;
+  payload_mass_g: number;
+  launch_datetime: string;
+}
+
+export interface PlanResult {
+  cases: FlightCase[];
+  wind_data_fetched_at: string;
+  launch_to_target_km: number;
+}
+
+// Search grid definitions
+const BALLOON_STRATEGIES = [
+  {
+    label: "소형 풍선 (빠른 상승)",
+    strategy: "fast",
+    description: "소형 풍선으로 빠르게 상승, 상층 바람 영향 최소화",
+    sizes: [600, 800],
+  },
+  {
+    label: "표준 풍선 (균형형)",
+    strategy: "balanced",
+    description: "표준 사이즈 풍선으로 균형 잡힌 비행 프로파일",
+    sizes: [1000, 1200],
+  },
+  {
+    label: "대형 풍선 (고고도 드리프트)",
+    strategy: "highalt",
+    description: "대형 풍선으로 높은 고도에서 바람 드리프트 최대 활용",
+    sizes: [1500, 2000],
+  },
+];
+
+const PARACHUTE_CONFIGS = [
+  { type: "십자형 (Cross/Cruciform)", diameter: 1.0, cd: 0.97 },
+  { type: "십자형 (Cross/Cruciform)", diameter: 1.5, cd: 0.97 },
+  { type: "팔각형 (Octagonal)",       diameter: 1.2, cd: 0.85 },
+  { type: "팔각형 (Octagonal)",       diameter: 1.5, cd: 0.85 },
+  { type: "반구형 (Hemispheric)",     diameter: 1.5, cd: 0.75 },
+  { type: "반구형 (Hemispheric)",     diameter: 2.0, cd: 0.75 },
+];
+
+const HELIUM_VOLUMES = [1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 10, 12];
+
+export async function planFlight(planInput: PlanInput): Promise<PlanResult> {
+  const { launch_lat, launch_lng, target_lat, target_lng, payload_mass_g, launch_datetime } = planInput;
+
+  const windFetchedAt = new Date().toISOString();
+  const windCache = await fetchWindCache(launch_lat, launch_lng);
+
+  const launchToTargetKm = haversineKm(launch_lat, launch_lng, target_lat, target_lng);
+
+  const caseResults: FlightCase[] = [];
+
+  for (let stratIdx = 0; stratIdx < BALLOON_STRATEGIES.length; stratIdx++) {
+    const strategy = BALLOON_STRATEGIES[stratIdx];
+    let bestDist = Infinity;
+    let bestCase: FlightCase | null = null;
+
+    for (const balloonMassG of strategy.sizes) {
+      for (const para of PARACHUTE_CONFIGS) {
+        for (const heVol of HELIUM_VOLUMES) {
+          // Skip combinations where lift is clearly insufficient
+          const m_total = (balloonMassG + payload_mass_g) / 1000;
+          const r_fill = Math.cbrt(3 * heVol / (4 * Math.PI));
+          const rho0 = P0 / (R * T0);
+          const lift_coeff_sl = rho0 - (P0 / (2077 * T0));
+          const gross_lift = lift_coeff_sl * heVol * G;
+          if (gross_lift - m_total * G < 0.5) continue; // skip insufficient lift
+
+          const simInput: SimulationInput = {
+            latitude: launch_lat,
+            longitude: launch_lng,
+            launch_datetime,
+            balloon_mass_g: balloonMassG,
+            payload_mass_g,
+            helium_volume_m3: heVol,
+            parachute_diameter_m: para.diameter,
+            parachute_cd: para.cd,
+            time_step: 60,
+          };
+
+          try {
+            // Use deterministic seed based on config for reproducible planning results
+            const seed = balloonMassG * 1000 + heVol * 100 + para.cd * 10;
+            const result = runSimulationCore(simInput, windCache, windFetchedAt, seed);
+            const dist = haversineKm(
+              result.landing.latitude, result.landing.longitude,
+              target_lat, target_lng
+            );
+
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestCase = {
+                case_number: stratIdx + 1,
+                label: strategy.label,
+                description: strategy.description,
+                strategy: strategy.strategy,
+                balloon_mass_g: balloonMassG,
+                helium_volume_m3: heVol,
+                parachute_type: para.type,
+                parachute_diameter_m: para.diameter,
+                parachute_cd: para.cd,
+                distance_to_target_km: Math.round(dist * 10) / 10,
+                simulation: result,
+              };
+            }
+          } catch {
+            // Skip invalid combinations
+          }
+        }
+      }
+    }
+
+    if (bestCase) {
+      caseResults.push(bestCase);
+    }
+  }
+
+  // Sort by distance to target
+  caseResults.sort((a, b) => a.distance_to_target_km - b.distance_to_target_km);
+
+  return {
+    cases: caseResults,
+    wind_data_fetched_at: windFetchedAt,
+    launch_to_target_km: Math.round(launchToTargetKm * 10) / 10,
+  };
 }
