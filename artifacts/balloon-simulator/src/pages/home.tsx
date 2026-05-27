@@ -14,7 +14,7 @@ import {
 } from "recharts";
 
 import { useRunSimulation, useGetPresets, getGetPresetsQueryKey, usePlanFlight } from "@workspace/api-client-react";
-import type { SimulationInput, SimulationResult, FlightCase } from "@workspace/api-client-react";
+import type { SimulationInput, SimulationResult, FlightCase, PlanResult, RecommendedWindow } from "@workspace/api-client-react";
 
 import { BalloonMap } from "@/components/Map";
 import BalloonCamera from "@/components/BalloonCamera";
@@ -110,7 +110,7 @@ export default function Home() {
   const [videoViewOpen, setVideoViewOpen] = useState(false);
 
   // ── Planning mode state ──────────────────────────────────────────────────
-  const [planResult, setPlanResult] = useState<{ cases: FlightCase[]; wind_data_fetched_at: string; launch_to_target_km: number } | null>(null);
+  const [planResult, setPlanResult] = useState<PlanResult | null>(null);
   const [selectedCaseIdx, setSelectedCaseIdx] = useState<number | null>(null);
   const [mapClickMode, setMapClickMode] = useState<"launch" | "target" | null>(null);
 
@@ -957,6 +957,71 @@ export default function Home() {
                       목적지까지 {planResult.launch_to_target_km.toFixed(1)} km
                     </Badge>
                   </div>
+
+                  {/* Feasibility Banner */}
+                  {planResult.feasibility_grade === "good" && (
+                    <div className="p-3 rounded-lg border border-green-500/30 bg-green-500/10 flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-green-400 mt-0.5 shrink-0" />
+                      <p className="text-xs text-green-300">{planResult.feasibility_reason}</p>
+                    </div>
+                  )}
+                  {planResult.feasibility_grade === "marginal" && (
+                    <div className="p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                      <p className="text-xs text-yellow-300">{planResult.feasibility_reason}</p>
+                    </div>
+                  )}
+                  {planResult.feasibility_grade === "infeasible" && (
+                    <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/10 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+                      <div className="space-y-1">
+                        <p className="text-xs font-bold text-red-400">이 날짜는 이론적으로 불가능합니다</p>
+                        <p className="text-[10px] text-red-300/80">{planResult.feasibility_reason}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recommended Windows */}
+                  {planResult.recommended_windows.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                        <Clock className="w-3 h-3" />
+                        향후 7일 추천 발사 시간대
+                      </p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {planResult.recommended_windows.map((w, i) => {
+                          const gradeColor = w.feasibility === "good"
+                            ? "border-green-500/40 bg-green-500/10 text-green-300"
+                            : w.feasibility === "marginal"
+                            ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
+                            : "border-red-500/30 bg-red-500/5 text-red-400/70";
+                          return (
+                            <button
+                              key={i}
+                              type="button"
+                              className={`rounded-lg border p-2 text-left hover:brightness-125 transition-all ${gradeColor}`}
+                              onClick={() => {
+                                const local = new Date(w.datetime);
+                                const yyyy = local.getFullYear();
+                                const mm = String(local.getMonth() + 1).padStart(2, "0");
+                                const dd = String(local.getDate()).padStart(2, "0");
+                                const hh = String(local.getHours()).padStart(2, "0");
+                                const min = String(local.getMinutes()).padStart(2, "0");
+                                planForm.setValue("launch_datetime", `${yyyy}-${mm}-${dd}T${hh}:${min}`);
+                              }}
+                            >
+                              <div className="text-[10px] font-bold">{w.label}</div>
+                              <div className="text-[9px] font-mono opacity-80">
+                                {w.feasibility === "good" ? "✓ " : w.feasibility === "marginal" ? "△ " : "✗ "}
+                                오차 {w.best_distance_km.toFixed(0)} km
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[9px] text-muted-foreground">클릭하면 해당 시간으로 변경됩니다. 이후 다시 계산하세요.</p>
+                    </div>
+                  )}
 
                   <div className="space-y-3">
                     {planResult.cases.map((fc, idx) => {

@@ -299,7 +299,7 @@ export async function fetchWindCache(lat: number, lon: number): Promise<WindCach
     longitude: lon.toString(),
     hourly: `${speedParams},${dirParams}`,
     wind_speed_unit: "ms",
-    forecast_days: "3",
+    forecast_days: "7",
     timezone: "UTC",
   })}`;
 
@@ -580,10 +580,21 @@ export interface PlanInput {
   launch_datetime: string;
 }
 
+export interface RecommendedWindow {
+  datetime: string;          // ISO string
+  label: string;             // human-readable e.g. "내일 오전 6시"
+  best_distance_km: number;  // best achievable distance at this time
+  feasibility: "good" | "marginal" | "infeasible";
+}
+
 export interface PlanResult {
   cases: FlightCase[];
   wind_data_fetched_at: string;
   launch_to_target_km: number;
+  feasible: boolean;
+  feasibility_grade: "good" | "marginal" | "infeasible";
+  feasibility_reason: string;
+  recommended_windows: RecommendedWindow[];  // top windows sorted by best_distance_km
 }
 
 // Search grid definitions
@@ -619,6 +630,88 @@ const PARACHUTE_CONFIGS = [
 
 const HELIUM_VOLUMES = [1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 10, 12];
 
+// ─── Feasibility helpers ──────────────────────────────────────────────────────
+
+function classifyFeasibility(
+  bestDistKm: number,
+  launchToTargetKm: number
+): { grade: "good" | "marginal" | "infeasible"; reason: string } {
+  const ratio = launchToTargetKm > 0 ? bestDistKm / launchToTargetKm : 1;
+
+  if (bestDistKm <= Math.max(15, launchToTargetKm * 0.15)) {
+    return { grade: "good", reason: `최선의 구성으로 목적지 ${bestDistKm.toFixed(1)} km 이내 착지 가능합니다.` };
+  }
+  if (bestDistKm <= Math.max(50, launchToTargetKm * 0.4)) {
+    return {
+      grade: "marginal",
+      reason: `현재 바람 패턴으로 정확한 착지가 어렵습니다. 최선의 구성도 목적지에서 ${bestDistKm.toFixed(1)} km 오차가 발생합니다. 다른 날짜를 시도해보세요.`,
+    };
+  }
+  return {
+    grade: "infeasible",
+    reason: `현재 날짜의 바람 방향이 목적지와 맞지 않아 이론적으로 도달이 어렵습니다. 최선의 구성도 ${bestDistKm.toFixed(1)} km (직선거리의 ${Math.round(ratio * 100)}%) 오차입니다. 아래 추천 날짜를 참고하세요.`,
+  };
+}
+
+/** Quick single-datetime best-distance estimate (fewer combos for speed) */
+function quickBestDistance(
+  launch_lat: number,
+  launch_lng: number,
+  target_lat: number,
+  target_lng: number,
+  payload_mass_g: number,
+  launch_datetime: string,
+  windCache: WindCache,
+  windFetchedAt: string
+): number {
+  const QUICK_HE = [2.5, 4, 6, 9] as const;
+  const QUICK_PARA = [
+    { type: "십자형", diameter: 1.0, cd: 0.97 },
+    { type: "팔각형", diameter: 1.5, cd: 0.85 },
+    { type: "반구형", diameter: 2.0, cd: 0.75 },
+  ];
+
+  let best = Infinity;
+  for (const strategy of BALLOON_STRATEGIES) {
+    const balloonMassG = strategy.sizes[0]; // just first size per strategy
+    for (const para of QUICK_PARA) {
+      for (const heVol of QUICK_HE) {
+        const m_total = (balloonMassG + payload_mass_g) / 1000;
+        const rho0 = P0 / (R * T0);
+        const lift_coeff_sl = rho0 - (P0 / (2077 * T0));
+        const gross_lift = lift_coeff_sl * heVol * G;
+        if (gross_lift - m_total * G < 0.3) continue;
+        try {
+          const seed = balloonMassG * 1000 + heVol * 100 + para.cd * 10;
+          const result = runSimulationCore(
+            { latitude: launch_lat, longitude: launch_lng, launch_datetime, balloon_mass_g: balloonMassG, payload_mass_g, helium_volume_m3: heVol, parachute_diameter_m: para.diameter, parachute_cd: para.cd, time_step: 60 },
+            windCache, windFetchedAt, seed
+          );
+          const dist = haversineKm(result.landing.latitude, result.landing.longitude, target_lat, target_lng);
+          if (dist < best) best = dist;
+        } catch { /* skip */ }
+      }
+    }
+  }
+  return best === Infinity ? 9999 : best;
+}
+
+/** Korean label for a datetime relative to now */
+function koreanTimeLabel(dt: Date, nowMs: number): string {
+  const diffH = (dt.getTime() - nowMs) / 3_600_000;
+  const hour = dt.getUTCHours();
+  const dayNames = ["일", "월", "화", "수", "목", "금", "토"];
+  const dayOfWeek = dayNames[dt.getUTCDay()];
+  const ampm = hour < 12 ? "오전" : "오후";
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  if (diffH < 24) return `오늘 ${ampm} ${h12}시`;
+  if (diffH < 48) return `내일 ${ampm} ${h12}시 (${dayOfWeek})`;
+  const dayNum = Math.floor(diffH / 24);
+  return `${dayNum}일 후 ${ampm} ${h12}시 (${dayOfWeek})`;
+}
+
+// ─── Main planFlight ──────────────────────────────────────────────────────────
+
 export async function planFlight(planInput: PlanInput): Promise<PlanResult> {
   const { launch_lat, launch_lng, target_lat, target_lng, payload_mass_g, launch_datetime } = planInput;
 
@@ -627,6 +720,7 @@ export async function planFlight(planInput: PlanInput): Promise<PlanResult> {
 
   const launchToTargetKm = haversineKm(launch_lat, launch_lng, target_lat, target_lng);
 
+  // ── Full grid search for requested datetime ──────────────────────────────
   const caseResults: FlightCase[] = [];
 
   for (let stratIdx = 0; stratIdx < BALLOON_STRATEGIES.length; stratIdx++) {
@@ -637,13 +731,11 @@ export async function planFlight(planInput: PlanInput): Promise<PlanResult> {
     for (const balloonMassG of strategy.sizes) {
       for (const para of PARACHUTE_CONFIGS) {
         for (const heVol of HELIUM_VOLUMES) {
-          // Skip combinations where lift is clearly insufficient
           const m_total = (balloonMassG + payload_mass_g) / 1000;
-          const r_fill = Math.cbrt(3 * heVol / (4 * Math.PI));
           const rho0 = P0 / (R * T0);
           const lift_coeff_sl = rho0 - (P0 / (2077 * T0));
           const gross_lift = lift_coeff_sl * heVol * G;
-          if (gross_lift - m_total * G < 0.5) continue; // skip insufficient lift
+          if (gross_lift - m_total * G < 0.5) continue;
 
           const simInput: SimulationInput = {
             latitude: launch_lat,
@@ -658,14 +750,12 @@ export async function planFlight(planInput: PlanInput): Promise<PlanResult> {
           };
 
           try {
-            // Use deterministic seed based on config for reproducible planning results
             const seed = balloonMassG * 1000 + heVol * 100 + para.cd * 10;
             const result = runSimulationCore(simInput, windCache, windFetchedAt, seed);
             const dist = haversineKm(
               result.landing.latitude, result.landing.longitude,
               target_lat, target_lng
             );
-
             if (dist < bestDist) {
               bestDist = dist;
               bestCase = {
@@ -682,24 +772,69 @@ export async function planFlight(planInput: PlanInput): Promise<PlanResult> {
                 simulation: result,
               };
             }
-          } catch {
-            // Skip invalid combinations
-          }
+          } catch { /* skip */ }
         }
       }
     }
-
-    if (bestCase) {
-      caseResults.push(bestCase);
-    }
+    if (bestCase) caseResults.push(bestCase);
   }
 
-  // Sort by distance to target
   caseResults.sort((a, b) => a.distance_to_target_km - b.distance_to_target_km);
+
+  // ── Feasibility ──────────────────────────────────────────────────────────
+  const overallBestKm = caseResults.length > 0 ? caseResults[0].distance_to_target_km : 9999;
+  const { grade: feasibility_grade, reason: feasibility_reason } = classifyFeasibility(overallBestKm, launchToTargetKm);
+  const feasible = feasibility_grade === "good";
+
+  // ── Date scan: try every 6h for 7 days using the same wind cache ─────────
+  // Determine the wind cache time range
+  const firstLevel = Object.values(windCache)[0];
+  const cacheStartMs = firstLevel?.times[0] ?? Date.now();
+  const cacheEndMs   = firstLevel?.times[firstLevel.times.length - 1] ?? (Date.now() + 7 * 86_400_000);
+
+  // Candidate datetimes: every 6h starting from now, within cache range
+  const nowMs = Date.now();
+  const scanStartMs = Math.max(nowMs, cacheStartMs);
+  // Round to next 6h boundary
+  const step6h = 6 * 3_600_000;
+  const firstCandidate = Math.ceil(scanStartMs / step6h) * step6h;
+
+  const rawWindows: RecommendedWindow[] = [];
+
+  for (let tMs = firstCandidate; tMs <= cacheEndMs - 2 * 3_600_000; tMs += step6h) {
+    const dt = new Date(tMs);
+    const dtISO = dt.toISOString();
+
+    // Skip the requested datetime (already computed above)
+    const reqMs = new Date(launch_datetime).getTime();
+    if (Math.abs(tMs - reqMs) < step6h / 2) continue;
+
+    const bestKm = quickBestDistance(
+      launch_lat, launch_lng, target_lat, target_lng,
+      payload_mass_g, dtISO, windCache, windFetchedAt
+    );
+
+    const { grade } = classifyFeasibility(bestKm, launchToTargetKm);
+
+    rawWindows.push({
+      datetime: dtISO,
+      label: koreanTimeLabel(dt, nowMs),
+      best_distance_km: Math.round(bestKm * 10) / 10,
+      feasibility: grade,
+    });
+  }
+
+  // Sort by best achievable distance, return top 6
+  rawWindows.sort((a, b) => a.best_distance_km - b.best_distance_km);
+  const recommended_windows = rawWindows.slice(0, 6);
 
   return {
     cases: caseResults,
     wind_data_fetched_at: windFetchedAt,
     launch_to_target_km: Math.round(launchToTargetKm * 10) / 10,
+    feasible,
+    feasibility_grade,
+    feasibility_reason,
+    recommended_windows,
   };
 }

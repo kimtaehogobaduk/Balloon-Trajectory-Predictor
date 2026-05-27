@@ -26,10 +26,21 @@ export interface FlightCase {
   simulation: SimulationResult;
 }
 
+export interface RecommendedWindow {
+  datetime: string;
+  label: string;
+  best_distance_km: number;
+  feasibility: "good" | "marginal" | "infeasible";
+}
+
 export interface PlanResult {
   cases: FlightCase[];
   wind_data_fetched_at: string;
   launch_to_target_km: number;
+  feasible: boolean;
+  feasibility_grade: "good" | "marginal" | "infeasible";
+  feasibility_reason: string;
+  recommended_windows: RecommendedWindow[];
 }
 
 export const planFlightRequest = async (input: PlanInput): Promise<PlanResult> => {
