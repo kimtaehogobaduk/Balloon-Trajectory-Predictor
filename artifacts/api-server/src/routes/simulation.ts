@@ -2,7 +2,6 @@ import { Router } from "express";
 import { RunSimulationBody } from "@workspace/api-zod";
 import { runBalloonSimulation, planFlight } from "../lib/balloonSimulator";
 import type { SimulationInput, PlanInput } from "../lib/balloonSimulator";
-import * as z from "zod";
 
 const router = Router();
 
@@ -75,16 +74,32 @@ const PRESETS = [
   },
 ];
 
-// ─── Plan input schema ────────────────────────────────────────────────────────
+// ─── Plan input manual validation ────────────────────────────────────────────
 
-const PlanBody = z.object({
-  launch_lat:      z.number().min(-90).max(90),
-  launch_lng:      z.number().min(-180).max(180),
-  target_lat:      z.number().min(-90).max(90),
-  target_lng:      z.number().min(-180).max(180),
-  payload_mass_g:  z.number().min(0).max(10000),
-  launch_datetime: z.string().min(1),
-});
+function parsePlanBody(body: unknown): { ok: true; data: PlanInput } | { ok: false; error: string } {
+  if (!body || typeof body !== "object") return { ok: false, error: "Request body missing" };
+  const b = body as Record<string, unknown>;
+  const nums = ["launch_lat", "launch_lng", "target_lat", "target_lng", "payload_mass_g"] as const;
+  for (const key of nums) {
+    if (typeof b[key] !== "number" || isNaN(b[key] as number)) {
+      return { ok: false, error: `${key} must be a number` };
+    }
+  }
+  if (typeof b["launch_datetime"] !== "string" || !b["launch_datetime"]) {
+    return { ok: false, error: "launch_datetime must be a non-empty string" };
+  }
+  return {
+    ok: true,
+    data: {
+      launch_lat:      b.launch_lat as number,
+      launch_lng:      b.launch_lng as number,
+      target_lat:      b.target_lat as number,
+      target_lng:      b.target_lng as number,
+      payload_mass_g:  b.payload_mass_g as number,
+      launch_datetime: b.launch_datetime as string,
+    },
+  };
+}
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
@@ -128,20 +143,13 @@ router.post("/simulate", async (req, res) => {
 });
 
 router.post("/plan", async (req, res) => {
-  const parsed = PlanBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+  const parsed = parsePlanBody(req.body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
     return;
   }
 
-  const input: PlanInput = {
-    launch_lat:      parsed.data.launch_lat,
-    launch_lng:      parsed.data.launch_lng,
-    target_lat:      parsed.data.target_lat,
-    target_lng:      parsed.data.target_lng,
-    payload_mass_g:  parsed.data.payload_mass_g,
-    launch_datetime: parsed.data.launch_datetime,
-  };
+  const input: PlanInput = parsed.data;
 
   try {
     const result = await planFlight(input);
