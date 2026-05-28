@@ -18,7 +18,7 @@ import type { SimulationInput, SimulationResult, FlightCase, PlanResult, Recomme
 
 import { BalloonMap } from "@/components/Map";
 import BalloonCamera from "@/components/BalloonCamera";
-import Globe3D from "@/components/Globe3D";
+import Route3D from "@/components/Route3D";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1213,7 +1213,7 @@ export default function Home() {
       )}
 
       {globeViewOpen && result && mode === "simulate" && (
-        <Globe3D
+        <Route3D
           trajectory={result.trajectory}
           animFrame={animFrame}
           onClose={() => setGlobeViewOpen(false)}
