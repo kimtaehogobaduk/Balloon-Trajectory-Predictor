@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "psfBgstvFm5layp3zc0zw"
+uri = "file://REPORT.md"
+type = "text"
+title = "우주풍선 낙하 예측 시뮬레이터 — 기능 상세 보고서"
